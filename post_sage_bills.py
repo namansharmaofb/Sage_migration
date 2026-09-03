@@ -65,6 +65,15 @@ API        = cfg("SME_BASE")
 NAMESPACE  = cfg("SME_NAMESPACE")
 ORG_GSTIN  = cfg("SME_ORG_GSTIN")
 ORG_PAN    = cfg("SME_ORG_PAN")
+
+# Devbox host for the ssh/MySQL reads below. Not required at import time: only
+# the staging and verify paths use it, and the Sage path must still run without.
+def db_host():
+    h = cfg("SME_DB_HOST")
+    if not h:
+        raise Stop("SME_DB_HOST is not set: export it to the devbox host that "
+                   "runs the smeassist MySQL.")
+    return "root@" + h
 ORG_CITY   = "Bengaluru"
 ORG_STATE  = "KARNATAKA"        # matches COMPANY_ADDR below; the org's own state
 ORG_STATE  = "KARNATAKA"
@@ -107,6 +116,129 @@ RCM_GL        = {"1L8TX14": "SGST", "1L8TX15": "CGST", "1L8TX16": "IGST"}
 PASSTHRU_GL = {
     "2A7TX04": ("1541311685238407168", "IGST Input (Import) @ 0.00%"),
 }
+# ============================================================================
+# BILL TYPE - Sage's own account group decides it, per document
+# ============================================================================
+# Defect: billType was the literal "PURCHASE" on every bill. The whole
+# AP-direct population is expense, so 6,082 of 6,092 posted documents carried
+# the wrong type, and 226 SAGE ledgers were minted under Direct Expenses with
+# not one under Indirect.
+#
+# GLAMF.ACCTGRPCOD is the authority and MUST be read per account. It cannot be
+# inferred from the account code: 51 of 1,029 accounts carry a group that
+# disagrees with their own prefix and 41 of those flip direct/indirect. Sage's
+# Carriage Inward is the clearest case - the base account 4E2ME13 is group
+# 4E4S while most of its children 4E2ME13-01..-92 are 4E2M. Lookups are keyed
+# on ACCTFMTTD, the formatted code, because that is what APIBD.IDGLACCT holds.
+BILLTYPE_BY_GROUP = {
+    "4E2M": "DIRECT_EXPENSE",     # manufacturing and consumption
+    "4E3E": "IN_DIRECT_EXPENSE",  # employee cost
+    "4E4S": "IN_DIRECT_EXPENSE",  # selling and distribution
+    "4E5O": "IN_DIRECT_EXPENSE",  # other / administrative
+    "4E6F": "IN_DIRECT_EXPENSE",  # finance cost
+}
+
+# Group 4E1M is deliberately NOT in that table: it is the one heterogeneous
+# group and routing it wholesale to PURCHASE misfiles the charge accounts. Of
+# its 49 accounts only the COGS heads are purchases; Printing, Processing,
+# Printing & Dyeing, Darning and Documentation-on-Imports are services bought
+# in, and 4E1M016 is the round-off. Measured over the window, treating the
+# group as PURCHASE would misfile 348 of the 365 non-round-off 4E1M lines,
+# including all 280 Processing Charges lines carrying Rs 92.7 lakh.
+#
+# The account decides, and the stem is matched so segmented children follow
+# their parent (4E1M030-01 Darning is the same account as 4E1M030).
+PURCHASE_ACCOUNTS = {"4E1M001", "4E1M002", "4E1M003"}   # COGS heads only
+DIRECT_ACCOUNTS = {
+    "4E1M014",   # Printing
+    "4E1M015",   # Processing Charges
+    "4E1M024",   # Printing & Dyeing Charges
+    "4E1M030",   # Darning Charges
+    "4E1M031",   # Documentation Charges On Imports
+}
+
+
+def account_bill_type(acct, groups):
+    """-> billType for one GL account, or None if nothing may be assumed.
+
+    The group is read FIRST and decides which test applies, so that the stem
+    rule below can never reach an account outside 4E1M.
+    """
+    acct = s(acct)
+    grp = groups.get(acct)
+    if grp != "4E1M":
+        # Everything outside 4E1M is decided on the FORMATTED account and
+        # NEVER on a stem. Segmented children do not follow their parent here:
+        # 22 accounts disagree with their own base, and Carriage Inward is the
+        # trap - base 4E2ME13 is 4E4S (indirect) while its children
+        # 4E2ME13-01..-92 are 4E2M (direct). Widening the stem rule to this
+        # branch would misfile every one of them. Counted per base group,
+        # children disagreeing with their parent: 4E4S 12 of 65, 4E3E 6 of 358,
+        # 4E5O 3 of 207, 4E2M 1 of 172, and 4E1M 0 of 19.
+        return BILLTYPE_BY_GROUP.get(grp)
+
+    # Inside 4E1M only. Stem-matching is sound HERE because this group is
+    # measurably homogeneous - all 19 of its segmented children carry their
+    # parent's group - not because stem-matching is sound in general. The
+    # window bills 4E1M030-01, never the bare 4E1M030, so the stem is what
+    # lets one entry cover both without listing every IDEPL suffix.
+    stem = acct.split("-")[0]
+    if stem in PURCHASE_ACCOUNTS:
+        return "PURCHASE"
+    if stem in DIRECT_ACCOUNTS:
+        return "DIRECT_EXPENSE"
+    # In the heterogeneous group but named by neither list. Refuse: the group
+    # says nothing, and a guess here is what put COGS and Processing Charges
+    # under the same head.
+    return None
+
+# The item-ledger mapping that goes with each bill type. ITEM_PURCHASE and
+# ITEM_DIRECT_EXPENSE are measured across the platform (see item_ledger_for).
+# getOrCreate/{referenceType} accepts ITEM_PURCHASE, ITEM_DIRECT_EXPENSE,
+# ITEM_IN_DIRECT_EXPENSE, ITEM_SALE, ITEM_INCOME and ASSET_EXPENSE. The
+# indirect one was always there - 2,960 mappings over 1,409 ledgers use it in
+# production. Zero SAGE ledgers reached it only because item_ledger_for() was
+# never called with it.
+INDIRECT_ITEM_MAPPING = "ITEM_IN_DIRECT_EXPENSE"
+
+# Accounts whose head is settled outside the account/group test, so a fresh run
+# does not hold them. Neither ever reaches bill_type_of(): classify() keeps the
+# round-off and the recoverable legs out of `exp`, and only `exp` votes.
+#   4E1M016  the purchase round-off. v3 classes it ROUNDOFF, which is not a
+#            billType. It rides in as a 0% line - Rs 57.45 over 537 lines in
+#            the window - and is booked under the direct-expense head.
+#   2A7TX04  import IGST reimbursed to the vendor. A balance-sheet recoverable
+#            whose LINE carries the explicit PASSTHRU_GL ledger, so this
+#            product's own item ledger never books anything.
+SETTLED_ACCOUNTS = {
+    ROUNDOFF_GL: "DIRECT_EXPENSE",
+    "2A7TX04": "DIRECT_EXPENSE",
+}
+
+ITEM_MAPPING_BY_BILLTYPE = {
+    "PURCHASE": "ITEM_PURCHASE",
+    "DIRECT_EXPENSE": "ITEM_DIRECT_EXPENSE",
+    "IN_DIRECT_EXPENSE": INDIRECT_ITEM_MAPPING,
+}
+
+# Sage keeps item HSN in an OPTIONAL FIELD, not on the item record:
+# ICITEM.TARIFFCODE is empty on all 1,196,108 rows, while ICITEMO carries
+# 971,675 HSNCODE rows of which 258,770 are non-empty. staging's sage_item
+# never pulled it, so goods lines with a blank hsn were sent as hsnCode=null
+# and refused one at a time with "HSN Code cannot be null".
+SQL_ITEM_HSN = """
+SET NOCOUNT ON;
+SELECT RTRIM(ITEMNO) itemno, RTRIM(VALUE) hsn
+  FROM ICITEMO WHERE RTRIM(OPTFIELD)='HSNCODE' AND RTRIM(VALUE)<>''
+"""
+
+# Last resort for the 572 items Sage has no HSN for ANYWHERE, almost all
+# 4FASHL. Deliberately 9999, which is not a plausible goods HSN: a visible
+# placeholder can be found and corrected later, a plausible-looking wrong code
+# cannot. Flagged hsnIsDefault in metaData exactly like EXPENSE_SAC. The GST
+# RATE is unaffected - read from Sage per line - so the tax stays correct.
+GOODS_HSN_DEFAULT = "9999"
+
 EXPENSE_SAC   = "996719"        # DEFAULT awaiting finance sign-off; flagged in metaData
 PLACEHOLDER_MOBILE = "9999999999"
 
@@ -224,7 +356,8 @@ SELECT RTRIM(v.VENDORID) vendor,
 SQL_GL = """
 SET NOCOUNT ON;
 SELECT RTRIM(ACCTFMTTD) acct_code,
-       REPLACE(REPLACE(RTRIM(ACCTDESC),CHAR(13),' '),CHAR(10),' ') description
+       REPLACE(REPLACE(RTRIM(ACCTDESC),CHAR(13),' '),CHAR(10),' ') description,
+       RTRIM(ACCTGRPCOD) acct_group
   FROM GLAMF WHERE LEFT(RTRIM(ACCTFMTTD),2)='4E'
      OR LEFT(RTRIM(ACCTFMTTD),4)='2A7T'
 """
@@ -698,7 +831,7 @@ def load_headers():
 
     import subprocess
     proc = subprocess.run(["ssh", "-o", "StrictHostKeyChecking=no",
-                           "root@$SME_DB_HOST", "cat %s" % HEADER_PSV],
+                           db_host(), "cat %s" % HEADER_PSV],
                           capture_output=True, text=True, timeout=300)
     if proc.returncode:
         raise Stop("Sage is unreachable AND the extract could not be read: %s"
@@ -770,6 +903,83 @@ def vendors_master():
     return rows
 
 
+_GL_GROUPS = {}
+
+
+def gl_groups():
+    """-> {formatted account code: ACCTGRPCOD}, Sage first then the extract.
+
+    Cached: classify() asks per document and the answer cannot change inside a
+    run. Keyed on ACCTFMTTD for the reason given against BILLTYPE_BY_GROUP."""
+    if _GL_GROUPS:
+        return _GL_GROUPS
+    try:
+        for r in sage_query(SQL_GL):
+            _GL_GROUPS[s(r["acct_code"])] = s(r["acct_group"])
+        print("  GL groups: Sage GLAMF (live) - %d rows" % len(_GL_GROUPS),
+              flush=True)
+        return _GL_GROUPS
+    except Exception as exc:                                    # noqa: BLE001
+        print("  Sage unreachable for GL groups (%s)"
+              % str(exc).split("\n")[0][:80], flush=True)
+    path = os.path.join(HERE, "output", "gl_accounts.csv")
+    if not os.path.exists(path):
+        raise Stop("Sage is unreachable and %s is missing - the bill type "
+                   "cannot be derived without ACCTGRPCOD." % path)
+    for r in _csv_rows(path):
+        # Both forms, so a line quoting the unformatted code still resolves.
+        grp = s(r.get("acct_group"))
+        _GL_GROUPS[s(r.get("acct_formatted"))] = grp
+        _GL_GROUPS.setdefault(s(r.get("acct_id")), grp)
+    _GL_GROUPS.pop("", None)
+    print("  GL groups: output/gl_accounts.csv (Sage down) - %d rows"
+          % len(_GL_GROUPS), flush=True)
+    return _GL_GROUPS
+
+
+def bill_type_of(exp):
+    """-> (billType, note) | (None, reason) for one document's 4E lines.
+
+    A bill carries ONE billType but its lines need not agree. The type follows
+    the money: the head holding the largest absolute amount wins, and an exact
+    tie goes to IN_DIRECT_EXPENSE - the conservative side, since it claims
+    neither an input credit nor a cost of goods.
+
+    Only expense lines vote. The round-off, the RCM payable legs (1L8TX*) and
+    the recoverable input legs (2A7T*) are not the document's purpose and are
+    already excluded from `exp` by classify().
+
+    A mixed document is NOT split into two bills: that would break 1:1 with the
+    source, duplicate the invoice number and split one payable in two. It does
+    not need splitting, because every line carries its own financeAccountDto
+    and the server auto-resolves a ledger only where that field is blank - so
+    the minority lines keep their own head regardless of what the header says.
+    """
+    groups = gl_groups()
+    tally, unknown = collections.OrderedDict(), []
+    for l in exp:
+        acct = s(l["gl"])
+        bt = account_bill_type(acct, groups)
+        if not bt:
+            unknown.append(acct)
+            continue
+        tally[bt] = tally.get(bt, D(0)) + abs(D(l["amount"] or 0))
+    if unknown:
+        return None, ("no bill type for account %s - refusing to guess"
+                      % ", ".join(sorted(set(unknown))[:5]))
+    if not tally:
+        return None, "no expense line carries an account group"
+    # Sort by amount, then put IN_DIRECT_EXPENSE first among equals. `False`
+    # sorts before `True`, so the key must be "is NOT indirect" to make the
+    # indirect side win a tie.
+    ranked = sorted(tally.items(),
+                    key=lambda kv: (-kv[1], kv[0] != "IN_DIRECT_EXPENSE"))
+    if len(ranked) == 1:
+        return ranked[0][0], ""
+    return ranked[0][0], ("mixed: " + ", ".join("%s %s" % (k, q2(v))
+                                                for k, v in ranked))
+
+
 def gl_names():
     """-> {formatted account code: description}, Sage first then the extract.
 
@@ -795,7 +1005,7 @@ def staging_query(sql):
     """Read-only against idedat_staging on the devbox, over ssh."""
     import subprocess
     proc = subprocess.run(
-        ["ssh", "-o", "StrictHostKeyChecking=no", "root@$SME_DB_HOST",
+        ["ssh", "-o", "StrictHostKeyChecking=no", db_host(),
          "mysql idedat_staging -N --raw --batch -e %s" % json.dumps(sql)],
         capture_output=True, text=True, timeout=600)
     if proc.returncode:
@@ -1179,7 +1389,13 @@ def classify(bill):
     # it still posts, on the amount-only CHARGE line it posted on before.
     items, item_why = po_detail(bill.get("po", []), exp, taxable, rates)
 
+    # The bill type comes from Sage's account groups, never from a default.
+    bill_type, type_note = bill_type_of(exp)
+    if not bill_type:
+        return None, type_note
+
     return {"header": h, "exp": exp, "roundoff": roundoff, "is_rcm": is_rcm,
+            "bill_type": bill_type, "type_note": type_note,
             "taxable": taxable, "tax": tax, "bill_amount": bill_amount,
             "zero": zero, "taxable_all": taxable_all,
             "tax_group": s(h["tax_group"]), "rates": rates,
@@ -1394,6 +1610,11 @@ def classify_goods(bill, categories=None):
             "rate_source": "stated per goods line (sage_goods_line.rate_sum)",
             "items": items,
             "item_source": "goods %d line(s), qty x unit cost exact" % len(items),
+            # Goods really are purchases, and stated as such rather than left to
+            # a default: these lines debit inventory (1L6T*), not expense, which
+            # is the whole reason this path exists apart from AP-direct. The
+            # account-group test does not apply - there is no 4E line to read.
+            "bill_type": "PURCHASE", "type_note": "",
             "procurement": "MATERIAL", "line_type": "GOODS",
             "categories": sorted(cats)}, None
 
@@ -1423,8 +1644,19 @@ def find_product_by_sku(api, sku):
     return None
 
 
-def item_ledger_for(api, product_id, mapping="ITEM_DIRECT_EXPENSE"):
+def item_ledger_for(api, product_id, mapping):
     """-> the finance account id for a product, creating it if needed.
+
+    `mapping` is REQUIRED and has no default. It used to default to
+    ITEM_DIRECT_EXPENSE, and because the AP-direct path never passed anything,
+    every one of its products was minted under a Direct Expenses head - 226
+    ledgers, with not one under Indirect. A default here is a silent
+    misclassification, so there is none.
+
+    Note the endpoint MINTS A SEPARATE LEDGER per reference type; it does not
+    remap an existing one. Calling it again with a different mapping adds a
+    correctly-headed ledger alongside the old one rather than moving it, which
+    is what makes a mis-headed product repairable in place.
 
     The mapping type decides which accounting group the ledger is minted under,
     and they are not interchangeable. Measured across the platform:
@@ -1446,33 +1678,86 @@ def item_ledger_for(api, product_id, mapping="ITEM_DIRECT_EXPENSE"):
     return None
 
 
-def ensure_products(api, state, accounts, names=None):
+def ensure_products(api, state, accounts, names=None, bill_type=None):
     """One CHARGE pseudo-item per Sage GL account, named from GLAMF.ACCTDESC.
 
     `names` lets the caller supply {account code: description} instead of
     reading Sage - the goods path takes it from staging.sage_gl_acct so it can
-    run when the Sage box is unreachable."""
+    run when the Sage box is unreachable.
+
+    `bill_type` lets a caller that already knows the answer state it instead of
+    deriving it per account. The goods path passes PURCHASE: its accounts are
+    inventory heads (1L6T*), not 4E expense heads, so the account/group test
+    would otherwise hold every one of them."""
     print("\n=== PRODUCTS ===", flush=True)
     if names is None:
         names = gl_names()
+    groups = gl_groups()
+    held = collections.Counter()
+    remapped = collections.Counter()
     for acct in sorted(accounts):
+        sku, name = "SAGE-" + acct, names.get(acct) or acct
+
+        # The item ledger is minted under an accounting group, and which group
+        # is decided HERE. An account whose group has no confirmed mapping is
+        # HELD, never minted on a default - that default was the defect.
+        bt = (bill_type or SETTLED_ACCOUNTS.get(acct)
+              or account_bill_type(acct, groups))
+        if not bt:
+            print("  HELD %s: no bill type for account (group %r)"
+                  % (sku, groups.get(acct)))
+            held["unmapped account"] += 1
+            continue
+        mapping = ITEM_MAPPING_BY_BILLTYPE.get(bt)
+        if not mapping:
+            print("  HELD %s: %s has no confirmed item-ledger mapping "
+                  "(set INDIRECT_ITEM_MAPPING to release)" % (sku, bt))
+            held[bt] += 1
+            continue
+
         # ROUNDOFF_GL used to be skipped as "a bill field". It is a line now, so
         # it needs a product and a ledger like any other 4E account.
-        if state.xw["products"].get(acct):
+        rec = state.xw["products"].get(acct)
+        if rec:
+            if rec.get("itemMapping") == mapping:
+                continue
+            # The product exists but its ledger was minted under a different
+            # head - every one of the 191 in the crosswalk predates this
+            # routing and carries the ITEM_DIRECT_EXPENSE default. Without this
+            # branch ensure_products would skip them and the bill would post
+            # with the right billType onto a Direct Expenses ledger, which is
+            # half a fix and reads as the defect still being present.
+            #
+            # getOrCreate MINTS A NEW LEDGER beside the old one rather than
+            # remapping it, and sets accountingGroupName at creation (verified:
+            # of 180 ITEM_IN_DIRECT_EXPENSE ledgers never modified since
+            # creation, 179 carry a group). So this is additive and idempotent:
+            # the stale ledger keeps its balance until its bills are revoked.
+            led = item_ledger_for(api, rec["productId"], mapping)
+            if not led:
+                print("  FAIL remap %s -> %s" % (sku, mapping)); continue
+            was = rec.get("ledger")
+            rec.update({"ledger": str(led), "billType": bt,
+                        "itemMapping": mapping, "priorLedger": was})
+            state.save()
+            remapped[mapping] += 1
+            print("  remapped %s  %s  ledger %s -> %s" % (sku, mapping, was, led))
             continue
-        sku, name = "SAGE-" + acct, names.get(acct) or acct
 
         # ADOPT BEFORE CREATE: a bare create on an existing SKU returns
         # "Sku Code already exists", and a -R2 retry would mint a duplicate
         # product with its own item ledger, fragmenting the chart of accounts.
         existing = find_product_by_sku(api, sku)
         if existing:
-            led = item_ledger_for(api, existing["productId"])
+            led = item_ledger_for(api, existing["productId"], mapping)
             if not led:
                 print("  FAIL adopt %s: no item ledger" % sku); continue
             state.xw["products"][acct] = {
                 "productId": str(existing["productId"]), "skuCode": sku,
                 "ledger": str(led), "name": existing.get("productName") or name,
+                # Recorded so a later run can tell which head a product was
+                # minted under without re-reading the chart of accounts.
+                "billType": bt, "itemMapping": mapping,
                 "adopted": True}
             state.save()
             print("  adopted %s -> %s" % (sku, existing["productId"]))
@@ -1520,14 +1805,23 @@ def ensure_products(api, state, accounts, names=None):
         # THE STEP THAT MATTERS: without it the bill line lands with a NULL
         # financeAccountId while still reporting success, and verify fails with
         # "No Finance Account Exists for product". Key on productId, not SKU.
-        led = item_ledger_for(api, pid)
+        led = item_ledger_for(api, pid, mapping)
         if not led:
             print("  FAIL ledger for %s" % sku); continue
         state.xw["products"][acct] = {"productId": pid, "skuCode": sku,
-                                      "ledger": str(led), "name": name}
+                                      "ledger": str(led), "name": name,
+                                      "billType": bt, "itemMapping": mapping}
         state.save()
-        print("  created %s  %s  product=%s ledger=%s" % (sku, name, pid, led))
+        print("  created %s  %s  product=%s ledger=%s  %s"
+              % (sku, name, pid, led, mapping))
     print("  products in crosswalk: %d" % len(state.xw["products"]))
+    if remapped:
+        print("  re-headed %d existing product ledger(s): %s"
+              % (sum(remapped.values()), dict(remapped)))
+    if held:
+        print("  HELD %d account(s), nothing minted on a default:" % sum(held.values()))
+        for reason, n in held.most_common():
+            print("     %-24s %d" % (reason, n))
 
 
 def party_ledger_for(api, contact_id):
@@ -1938,8 +2232,12 @@ def build_payload(api, key, shape, contact, products, items=None):
         "status": "ACTIVE", "organisationId": ORG_ID,
     }
 
-    return {
-        "organisationId": ORG_ID, "billType": "PURCHASE",
+    # 4.6 - billType is Sage's account group, not a constant. It used to be the
+    # literal "PURCHASE" on every document; see BILLTYPE_BY_GROUP.
+    bill_type = shape["bill_type"]
+
+    payload = {
+        "organisationId": ORG_ID, "billType": bill_type,
         # 5 - Sage IDINVC verbatim, after the *N strip.
         "billNumber": invoice,
         "billSeriesNumber": series_number(api, dt),
@@ -1959,7 +2257,8 @@ def build_payload(api, key, shape, contact, products, items=None):
         "purchaseType": "DOMESTIC",
         # MATERIAL for a raw-material purchase, SERVICE for AP-direct job work.
         # The platform also accepts ASSET; all three are in use in this org.
-        "billProcurementType": shape.get("procurement", "SERVICE"),
+        # Set below, and only on a PURCHASE.
+        "billProcurementType": None,
         "billEntityMappingDtos": [{"entityType": "ADHOC_PURCHASE_BILL",
                                    "billEntityParentType": "ADHOC_PURCHASE_BILL",
                                    "status": "ACTIVE", "mappedAmount": 0}],
@@ -1977,8 +2276,20 @@ def build_payload(api, key, shape, contact, products, items=None):
                      "sageTaxGroup": shape["tax_group"],
                      "sageRcm": str(bool(shape["is_rcm"])),
                      "sageBatch": str(h["CNTBTCH"]), "sageItem": str(h["CNTITEM"]),
+                     "sageBillType": bill_type,
+                     "sageTypeNote": shape.get("type_note") or "",
                      "migrationSource": "IDEDAT"},
     }
+
+    # billProcurementType is set on PURCHASE bills only: it is NULL on 100% of
+    # the 24,299 DIRECT_EXPENSE and 34,342 IN_DIRECT_EXPENSE bills already in
+    # production. Sending "SERVICE" on an expense bill invents a shape the
+    # platform never uses.
+    if bill_type == "PURCHASE":
+        payload["billProcurementType"] = shape.get("procurement", "SERVICE")
+    else:
+        payload.pop("billProcurementType", None)
+    return payload
 
 
 def assert_invariants(payload, shape):
@@ -2147,7 +2458,7 @@ def mysql(sql, cols=None):
                         "-o", "ControlMaster=auto",
                         "-o", "ControlPath=/tmp/.sage-cm-%r",
                         "-o", "ControlPersist=600",
-                        "root@$SME_DB_HOST", "mysql smeassist -N --raw -e %s"
+                        db_host(), "mysql smeassist -N --raw -e %s"
                         % json.dumps(sql)],
                        capture_output=True, text=True, timeout=300)
     if p.returncode:
@@ -2274,6 +2585,8 @@ def phase_run(api, state, args, do_post):
         rates = sorted({li["gstPercentage"] for li in payload["lineItemDtoList"]})
         print("\n  %-38s %-11s %s%s" % (tag, shape["tax_group"],
               "RCM " if shape["is_rcm"] else "", labels.get(key, "")))
+        print("     billType=%s%s" % (payload["billType"],
+              "  [%s]" % shape["type_note"] if shape.get("type_note") else ""))
         print("     taxable=%s tax=%s roundOff=%s bill=%s lines=%d rates=%s"
               % (shape["taxable"], shape["tax"], shape["roundoff"],
                  shape["bill_amount"], len(payload["lineItemDtoList"]), rates))
@@ -2434,14 +2747,58 @@ def item_key(it):
     return "%s|%s" % (s(it["item"]), platform_unit(it.get("um") or it.get("stock_um")))
 
 
-def _item_payload(it, unit, sku, name):
+_ITEM_HSN = {}
+
+
+def item_hsn_map():
+    """-> {unformatted item number: HSN} from Sage's item optional fields.
+
+    Cached. Sage being unreachable is not fatal: the caller still falls back
+    through the line's own HSN, a sibling line, and then the placeholder."""
+    if _ITEM_HSN:
+        return _ITEM_HSN
+    try:
+        for r in sage_query(SQL_ITEM_HSN):
+            _ITEM_HSN[s(r["itemno"])] = s(r["hsn"])
+        print("  item HSN: Sage ICITEMO optional field - %d items"
+              % len(_ITEM_HSN), flush=True)
+    except Exception as exc:                                    # noqa: BLE001
+        print("  item HSN: Sage unreachable (%s); line HSN + default only"
+              % str(exc).split("\n")[0][:60], flush=True)
+        _ITEM_HSN[""] = ""
+    return _ITEM_HSN
+
+
+def resolve_item_hsn(it, by_item=None):
+    """-> (hsn, source). Never None; the platform refuses a null hsnCode.
+
+    In order of authority: the HSN Sage states on the line, the HSN the SAME
+    item carries on another line, Sage's item-master optional field, then the
+    flagged placeholder."""
+    own = normalise_hsn(it.get("hsn"))
+    if own:
+        return own, "line"
+    raw = s(it.get("item_raw")) or s(it["item"]).replace("-", "")
+    if by_item:
+        sib = normalise_hsn(by_item.get(raw) or by_item.get(s(it["item"])))
+        if sib:
+            return sib, "sibling"
+    m = item_hsn_map()
+    master = normalise_hsn(m.get(raw) or m.get(s(it["item"])))
+    if master:
+        return master, "ICITEMO"
+    return GOODS_HSN_DEFAULT, "DEFAULT"
+
+
+def _item_payload(it, unit, sku, name, by_item=None):
     stock, cat_id = stock_type_for([s(it.get("category"))])
+    _hsn, _hsn_src = resolve_item_hsn(it, by_item)
     p = {
         "productName": name[:200], "skuCode": sku,
         "unit": unit, "unitOfMeasurement": unit,
         "unitPrice": float(q2(D(str(it["unitcost"])))),
         "typeOfStock": stock,
-        "hsnCode": normalise_hsn(it.get("hsn")),
+        "hsnCode": _hsn,
         "gstPercentage": float(D(str(it["rate"]))),
         "isManageInventory": False,
         "itemStatus": "ACTIVE", "isBulkUpload": True,
@@ -2450,6 +2807,8 @@ def _item_payload(it, unit, sku, name):
                      "sageCategory": s(it.get("category")),
                      "sageUnit": s(it.get("um")),
                      "hsnMissing": "true" if not s(it.get("hsn")) else "false",
+                     "hsnSource": _hsn_src,
+                     "hsnIsDefault": "true" if _hsn_src == "DEFAULT" else "false",
                      "migrationSource": "IDEDAT"},
     }
     # Every type except ASSET and RESOURCE is refused without one
@@ -2459,7 +2818,7 @@ def _item_payload(it, unit, sku, name):
     return p
 
 
-def ensure_item_products_parallel(state, items, workers=6):
+def ensure_item_products_parallel(state, items, workers=6, by_item=None):
     """The same work as ensure_item_products, run across a pool.
 
     There is no bulk product endpoint - /product/bulk, /product/bulkUpload and
@@ -2505,7 +2864,8 @@ def ensure_item_products_parallel(state, items, workers=6):
             rec = dict(prior, ledger=str(led)) if led else None
             why = None if led else "no ledger"
         else:
-            st, body = api.post("/product/", _item_payload(it, unit, sku, name))
+            st, body = api.post("/product/",
+                                _item_payload(it, unit, sku, name, by_item))
             rec, why = None, None
             if api.ok(st, body):
                 pid = str(api.data(body).get("productId"))
@@ -2593,12 +2953,13 @@ def ensure_item_products(api, state, items):
         # FUZZY endpoint up to ten times, which at one search per item is
         # hundreds of calls and minutes of rate-limit backoff for nothing.
         _stock, _cat_id = stock_type_for([s(it.get("category"))])
+        _hsn, _hsn_src = resolve_item_hsn(it)
         payload = {
             "productName": name[:200], "skuCode": sku,
             "unit": unit, "unitOfMeasurement": unit,
             "unitPrice": float(q2(D(str(it["unitcost"])))),
             "typeOfStock": _stock,
-            "hsnCode": normalise_hsn(it.get("hsn")),
+            "hsnCode": _hsn,
             "gstPercentage": float(D(str(it["rate"]))),
             # Stock is not being migrated here, only the purchase.
             "isManageInventory": False,
@@ -2684,7 +3045,7 @@ def phase_goods_masters(api, state, args):
     print("\nmasters for %d candidate bills" % len(scope))
     ensure_products(api, state,
                     {s(l["gl"]) for _, sh in scope for l in sh["exp"]},
-                    names=names)
+                    names=names, bill_type="PURCHASE")
     ensure_contacts(api, state, {k[0] for k, _ in scope}, rows=rows)
 
     # NOW the eligible set is knowable, and it is what post will work from.
@@ -2692,9 +3053,34 @@ def phase_goods_masters(api, state, args):
     work = cands if args.all_items else cands[:args.limit or 10]
     print("\n%d bills are postable; building their item products" % len(work))
 
+    # An item's HSN read off ANY of its lines, for items whose other lines
+    # state one and this one does not. Exact, not inferred - same item, same
+    # HSN - and it resolves 135 items before the master lookup is needed.
+    by_item = {}
+    for bill in book.values():
+        for l in bill["lines"]:
+            h = normalise_hsn(l.get("hsn"))
+            if h:
+                by_item.setdefault(s(l.get("item_raw")) or s(l["item"]), h)
+                by_item.setdefault(s(l["item"]), h)
+
     reps = {}
     if args.all_items:
+        # The product master carries ONE unitPrice, but Sage bills the same
+        # (item, unit) at several prices: 1,211 pairs carry 2 distinct unit
+        # costs in this window, and a long tail runs to 8. setdefault() kept
+        # whichever row happened to be read first, which is arbitrary - the
+        # master could end up advertising a price from January for an item
+        # last bought in April.
+        #
+        # The LATEST price wins, by the invoice date of the bill the line sits
+        # on. That is the item's current cost and the only defensible single
+        # answer. It changes no accounting: every bill line still posts its own
+        # stated unit price, and qty x unit_cost = extended is asserted per
+        # line either way. This is the master-data default only.
+        seen_date = {}
         for bill in book.values():
+            bdate = s(bill["header"].get("bill_date"))
             for l in bill["lines"]:
                 if cats and s(l.get("category")) not in cats:
                     continue
@@ -2703,9 +3089,12 @@ def phase_goods_masters(api, state, args):
                 it = dict(l, qty=D(str(l["qty"])), unitcost=D(str(l["unitcost"])),
                           rate=q2(D(str(l["rate"] or 0))),
                           ext=q2(D(str(l["ext"] or 0))))
-                reps.setdefault(item_key(it), it)
+                k = item_key(it)
+                if k not in reps or bdate >= seen_date.get(k, ""):
+                    reps[k], seen_date[k] = it, bdate
         print("  --all-items: %d distinct (item, unit) products across the whole "
               "goods population" % len(reps))
+        print("     unit price taken from each item's LATEST bill in the window")
     else:
         for _, sh in work:
             for it in sh["exp"]:
@@ -2713,7 +3102,8 @@ def phase_goods_masters(api, state, args):
         print("  %d distinct (item, unit) products needed" % len(reps))
 
     if args.all_items or len(reps) > 40:
-        ensure_item_products_parallel(state, reps, workers=max(1, args.workers))
+        ensure_item_products_parallel(state, reps, workers=max(1, args.workers),
+                                     by_item=by_item)
     else:
         ensure_item_products(api, state, reps)
 

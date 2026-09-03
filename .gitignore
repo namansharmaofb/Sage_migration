@@ -1,0 +1,63 @@
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+work/venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ---------------------------------------------------------------------------
+# Business data — real vendor names, GSTINs, addresses, invoice numbers and
+# amounts. Reproducible from extract.sql; never committed.
+# ---------------------------------------------------------------------------
+output/
+ref/
+state/
+*.csv
+*.psv
+crosswalk.json
+crosswalk_live.json
+masters_crosswalk.json
+work/*.json
+work/repost_needed_po_items.txt
+
+# ---------------------------------------------------------------------------
+# Run artefacts
+# ---------------------------------------------------------------------------
+logs/
+work/logs/
+*.log
+
+# ---------------------------------------------------------------------------
+# Internal infrastructure records — host names, firewall rules, SQL logins,
+# devbox internals. Kept out of a public repo.
+# ---------------------------------------------------------------------------
+MACHINE-CHANGES.md
+DEVBOX-REFERENCE-SNAPSHOT.txt
+PROMPT-*.md
+windows-claude-prompt-*.txt
+
+# ---------------------------------------------------------------------------
+# Editor / tooling / local backups
+# ---------------------------------------------------------------------------
+.claude/
+.idea/
+.vscode/
+*.swp
+*.bak
+*.before-*
+*~
+.DS_Store

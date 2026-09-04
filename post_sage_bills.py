@@ -1758,12 +1758,70 @@ def classify_goods(bill, categories=None):
 # MASTERS
 # ============================================================================
 
+_SKU_INDEX = {}
+_SKU_LOCK = None
+
+
+def product_index(api, refresh=False):
+    """-> {skuCode: product} for the whole org, read once and cached.
+
+    /product/products?searchKey=X DOES NOT SEARCH. It answers 200 and returns
+    the org's products unfiltered - asking for SAGE-ID41002AIR01-ROL comes back
+    with SAGE-4E4SD01, SAGE-4E2ME14 and 2,941 others, totalElements identical
+    whatever the key. The previous code paged 10 x 100 of those looking for an
+    exact match, so any product past the first 1,000 rows was invisible: create
+    said "Sku Code already exists", adoption then found nothing, and the SKU was
+    recorded BURNED. That is a 43% failure rate on a run whose products were all
+    present in the database.
+
+    So the listing is walked ONCE into a dict instead of being re-walked per
+    item. It also costs ~30 calls for the whole run rather than 10 per lookup,
+    which matters against a ~4.5/s budget.
+    """
+    import threading
+    global _SKU_LOCK
+    if _SKU_LOCK is None:
+        _SKU_LOCK = threading.Lock()
+    with _SKU_LOCK:
+        if _SKU_INDEX and not refresh:
+            return _SKU_INDEX
+        if refresh:
+            _SKU_INDEX.clear()
+        page, seen = 0, 0
+        while page < 200:
+            st, body = api.get("/product/products?pageSize=200&pageNumber=%d" % page)
+            if not api.ok(st, body):
+                raise LookupFailed("product listing failed (HTTP %s) at page %d"
+                                   % (st, page))
+            d = api.data(body)
+            rows = (d.get("content") or []) if isinstance(d, dict) else []
+            for pr in rows:
+                k = s(pr.get("skuCode"))
+                if k:
+                    _SKU_INDEX[k] = pr
+            seen += len(rows)
+            if not rows or (isinstance(d, dict) and d.get("last")):
+                break
+            page += 1
+        print("  product index: %d SKUs across %d pages" % (len(_SKU_INDEX), page + 1),
+              flush=True)
+        return _SKU_INDEX
+
+
+def remember_product(pr):
+    """Add a just-created product so a later adoption in the same run sees it."""
+    k = s((pr or {}).get("skuCode"))
+    if k:
+        _SKU_INDEX[k] = pr
+
+
 def find_product_by_sku(api, sku):
-    """Exact-SKU lookup. /product/products?searchKey= is a FUZZY search - asking
-    for SAGE-4E5O027 returns every SKU sharing a prefix - so a small page can
-    push the exact match off the end and the caller then tries to create a
-    product that already exists ("Sku Code already exists"), which is how a
-    duplicate like SAGE-4E2ME07-R2 gets minted. Page through until it is found."""
+    """-> the product with exactly this SKU, or None if the org has no such
+    product. Raises LookupFailed if the question could not be answered."""
+    return product_index(api).get(sku)
+
+
+def _find_product_by_sku_paged(api, sku):
     page = 0
     while page < 10:
         st, body = api.get("/product/products?searchKey=%s&pageSize=100&pageNumber=%d"
@@ -3059,6 +3117,8 @@ def ensure_item_products_parallel(state, items, workers=6, by_item=None):
                 api.call("PATCH", "/product/%s/ACTIVE" % pid)
                 rec = {"productId": pid, "skuCode": sku, "name": name,
                        "unit": unit}
+                remember_product({"skuCode": sku, "productId": pid,
+                                  "productName": name})
             elif any(e in api.err(body) for e in PRODUCT_EXISTS_ERRORS):
                 try:
                     existing = find_product_by_sku(api, sku)

@@ -1543,13 +1543,38 @@ def load_goods_book():
     print("  %d additional-cost lines on %d documents"
           % (sum(len(v) for v in svc_lines.values()), len(svc_lines)), flush=True)
 
+    # MERGE the *N receipt parts, do not overwrite them. This was a plain
+    # `book[k] = {...}`, so a goods document split across parts kept only the
+    # LAST one and everything on the earlier parts was silently dropped:
+    # FABI470|1173/2025-26 posted 10,183.95 against Sage's 815,867.96 because
+    # part *1 carried 805,684.01 and was thrown away. 975 of the window's
+    # goods documents are multi-part. The AP-direct loader above already
+    # accumulates; this one did not.
+    #
+    # doc_total and tax_total are summed across parts, the lines and
+    # additional-cost lines are concatenated, and the earliest part supplies
+    # the dates. classify_goods() then ties the merged total to the merged
+    # lines exactly as it does for a single-part document.
     book = collections.OrderedDict()
     for h in heads:
         k = (s(h["vendor"]), base_invoice(h["invoice_raw"]))
-        book[k] = {"header": h, "lines": lines.get(h["invhseq"], []),
-                   "gl": gl.get(k, {}), "has_service": h["invhseq"] in svc,
-                   "svc": svc_lines.get(h["invhseq"], [])}
-    print("  %d goods documents" % len(book), flush=True)
+        b = book.get(k)
+        if b is None:
+            book[k] = {"header": dict(h), "lines": list(lines.get(h["invhseq"], [])),
+                       "gl": gl.get(k, {}), "has_service": h["invhseq"] in svc,
+                       "svc": list(svc_lines.get(h["invhseq"], [])),
+                       "parts": 1}
+            continue
+        hdr = b["header"]
+        hdr["doc_total"] = D(str(hdr["doc_total"] or 0)) + D(str(h["doc_total"] or 0))
+        hdr["tax_total"] = D(str(hdr["tax_total"] or 0)) + D(str(h["tax_total"] or 0))
+        b["lines"].extend(lines.get(h["invhseq"], []))
+        b["svc"].extend(svc_lines.get(h["invhseq"], []))
+        b["has_service"] = b["has_service"] or (h["invhseq"] in svc)
+        b["parts"] += 1
+    multi = sum(1 for b in book.values() if b["parts"] > 1)
+    print("  %d goods documents (%d multi-part, merged across their *N parts)"
+          % (len(book), multi), flush=True)
     return book
 
 
@@ -2188,10 +2213,23 @@ def build_payload(api, key, shape, contact, products, items=None):
             # matches the product's primary unit; the ledger still comes from
             # the GL pseudo-item, so the voucher lands on the inventory head.
             i_pr = (items or {}).get(item_key(it))
-            # The item product carries its own ITEM_PURCHASE ledger; fall back
-            # to the GL pseudo-item's only if it somehow has none.
-            line_pr = (dict(i_pr, ledger=i_pr.get("ledger") or led_pr["ledger"])
-                       if i_pr else led_pr)
+            # The item product carries its own ITEM_PURCHASE ledger. It used
+            # to fall back to the GL pseudo-item's "if it somehow has none",
+            # and that fallback is how real goods came to book into an A/P
+            # Clearing head: on the goods path the GL pseudo-item IS a Sage
+            # clearing account (1L6T*/1L7*, every one ACCTTYPE=B), so a
+            # ledgerless item silently posted balance-sheet money into P&L.
+            # Measured: 23 lines, Rs 87,043.35, across two clearing accounts.
+            #
+            # An item WITHOUT a ledger is now refused by eligible_goods before
+            # it reaches here; a service charge line legitimately has no item
+            # product and keeps the GL pseudo-item, which for those lines is a
+            # 4E expense head and correct.
+            if i_pr and not i_pr.get("ledger"):
+                raise Stop("%s|%s: item %s has no ledger and the GL head %s is "
+                           "a balance-sheet clearing account - refusing to book "
+                           "it into P&L" % (vendor, invoice, item_key(it), i_gl))
+            line_pr = i_pr if i_pr else led_pr
             spec.append((line_pr, i_gl,
                          "PO:%s" % s(it["item"]),
                          it.get("rate", rate), amt,
@@ -3243,8 +3281,13 @@ def phase_goods(api, state, args, do_post):
             print("  %-34s no product for GL %s" % (tag, ", ".join(missing)))
             continue
         xwi = state.xw.get("items", {})
+        # A LEDGER, not merely a product row. A product without one used to
+        # pass this check and then inherit the clearing account's ledger.
+        # Service charge lines (CNTLINE "SVC:...") carry no item by design and
+        # are booked on their own 4E expense head, so they are exempt.
         no_item = sorted({item_key(l) for l in shape["exp"]
-                          if item_key(l) not in xwi})
+                          if not str(l.get("CNTLINE", "")).startswith("SVC:")
+                          and not (xwi.get(item_key(l)) or {}).get("ledger")})
         if no_item:
             print("  %-34s no item product for %s" % (tag, ", ".join(no_item[:2])))
             failures.append((tag, "no item product for %s" % ", ".join(no_item)))

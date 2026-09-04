@@ -7,7 +7,7 @@ PY=.venv/bin/python
 while kill -0 "$1" 2>/dev/null; do sleep 20; done
 echo "[$(date '+%H:%M:%S')] AP-direct done. posted.log=$(wc -l < work/posted.log)"
 
-$PY ./post_sage_bills.py goods-masters --all-categories --all-items --workers 8 \
+$PY ./post_sage_bills.py goods-masters --all-categories --all-items --workers 6 \
     > work/logs/gm-$(date +%Y%m%d-%H%M%S).log 2>&1
 echo "[$(date '+%H:%M:%S')] goods-masters exit=$? items=$($PY -c "import json;print(len(json.load(open('work/crosswalk_live.json')).get('items',{})))")"
 

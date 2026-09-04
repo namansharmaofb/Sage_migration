@@ -52,7 +52,34 @@ default would file bills against the wrong organisation.
 The auth token is short-lived. Refresh it before a long run — either
 `SME_TOKEN` in `.env`, or `--token` per invocation.
 
-## Running
+## Running everything
+
+```bash
+./run_all.sh            # every phase that still has work, in order
+./run_all.sh --check    # reconcile + failure report, writes nothing
+./run_all.sh --from goods-masters   # start at a given phase
+```
+
+`run_all.sh` preflights `.env`, the API, Sage and the auth token, then runs
+`masters` -> `post` -> `goods-masters` -> `goods-post` and finishes with a
+reconciliation. Every phase is resumable: bills already in `work/posted.log`
+are skipped and masters already in the crosswalk are skipped, so re-running
+after an interruption continues rather than repeats.
+
+It runs phases **strictly one at a time**, and refuses to start if another
+phase is live. That is not only about the shared crosswalk — two phases
+against this API throttle each other badly, measured at 12 bills/min
+concurrent against 63 bills/min alone, so serial is also simply faster.
+`--check` is read-only and deliberately works while a run is in flight.
+
+Afterwards:
+
+| file | what it holds |
+|---|---|
+| `work/reconcile-report.json` | Sage vs SMEAssist, per document |
+| `work/failures-report.json` | everything not posted, with reason and amount |
+
+## Running a single phase
 
 ```
 ./post_sage_bills.py <phase> [--pilot] [--limit N] [--token T]

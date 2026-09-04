@@ -23,7 +23,7 @@ Usage:
     ./post_sage_bills.py post --pilot
     ./post_sage_bills.py verify
 """
-import argparse, calendar, collections, json, os, re, sys, time
+import argparse, calendar, collections, json, os, random, re, sys, time
 from decimal import Decimal as D, ROUND_HALF_UP
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -244,7 +244,50 @@ PLACEHOLDER_MOBILE = "9999999999"
 
 CROSSWALK = os.path.join(WORK, "crosswalk_live.json")
 POSTED_LOG = os.path.join(WORK, "posted.log")
-MAX_RETRY, THROTTLE = 6, 0.4
+MAX_RETRY, THROTTLE = 8, 0.4
+
+# The server rate-limits per ORGANISATION, not per connection, and answers 403
+# "Rate limit exceeded" once you cross it. Measured on this devbox: a single
+# connection sustains 116 requests in 25.1s - about 4.6/s - with no rejection
+# at all. Six workers each pacing themselves at THROTTLE were therefore
+# ATTEMPTING ~15-30/s against a ~5/s budget, so most calls were rejected,
+# every worker backed off by the identical 2/4/8/16s, and they all returned
+# together to collide again. More workers made the run slower, not faster.
+#
+# So pacing belongs in ONE place for the whole process, not in each thread.
+API_RATE = 4.5
+
+
+class RateGate:
+    """Process-wide pacing. Threads take their turn from a single schedule.
+
+    The lock is held only long enough to claim a slot, never across the sleep,
+    so N threads pipeline their network latency instead of serialising on it.
+    """
+
+    def __init__(self, rate):
+        import threading
+        self.interval = 1.0 / float(rate)
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def wait(self):
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next)
+            self._next = slot + self.interval
+        delay = slot - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+
+    def back_off(self, seconds):
+        """Push the whole schedule out, so a 403 slows EVERY thread, not just
+        the one that happened to receive it."""
+        with self._lock:
+            self._next = max(self._next, time.monotonic() + seconds)
+
+
+GATE = RateGate(API_RATE)
 
 # Legal Indian GST slabs, used only to VALIDATE the rate Sage states - never to
 # invent one. Defect 4.1: read the rate, never divide.
@@ -254,6 +297,12 @@ LEGAL_SLABS = {D(x) for x in ("0", "0.1", "0.25", "1", "1.5", "3", "5", "6",
 
 class Stop(Exception):
     """Unrecoverable. Stop the run; do not retry."""
+
+
+class LookupFailed(Exception):
+    """A read did not complete, so its result proves nothing. Distinct from a
+    read that completed and found nothing - callers must not treat a throttled
+    or errored lookup as evidence that a record is absent."""
 
 
 def q2(x):
@@ -705,6 +754,7 @@ class Api:
         url = API + path
         for attempt in range(1, MAX_RETRY + 1):
             self.calls += 1
+            GATE.wait()
             try:
                 r = self.session.request(method, url, headers=self._headers(),
                                          data=json.dumps(body) if body is not None else None,
@@ -720,9 +770,15 @@ class Api:
                 parsed = r.text[:2000]
             msg = str(parsed.get("errorMessage") or "") if isinstance(parsed, dict) else ""
             if (r.status_code == 403 or "Rate limit" in msg) and attempt < MAX_RETRY:
-                wait = min(30, 2 ** attempt)
-                print("      rate limited - backing off %ds (attempt %d)" % (wait, attempt),
-                      flush=True)
+                # Jittered, and applied to the SHARED schedule. Without the
+                # jitter every worker waited the identical 2/4/8/16s and came
+                # back in lockstep to collide again; without back_off() the
+                # other threads carried on pushing while this one waited.
+                wait = min(30, 2 ** attempt) * (0.5 + random.random())
+                GATE.back_off(wait)
+                if attempt >= 3:
+                    print("      rate limited - backing off %.1fs (attempt %d)"
+                          % (wait, attempt), flush=True)
                 time.sleep(wait)
                 continue
             if r.status_code == 401:
@@ -737,7 +793,6 @@ class Api:
             if r.status_code >= 500 and attempt < MAX_RETRY and not msg:
                 time.sleep(min(30, 2 ** attempt))
                 continue
-            time.sleep(THROTTLE)
             return r.status_code, parsed
         return None, "exhausted retries"
 
@@ -1713,6 +1768,16 @@ def find_product_by_sku(api, sku):
     while page < 10:
         st, body = api.get("/product/products?searchKey=%s&pageSize=100&pageNumber=%d"
                            % (sku, page))
+        # A FAILED lookup is not an absent product. When the server answers 403
+        # "Rate limit exceeded" - which it does under sustained load, past the
+        # backoff cap - api.data() yields no rows, and returning None here made
+        # that indistinguishable from "this SKU does not exist". The caller then
+        # recorded the SKU as BURNED, permanently, on the strength of a
+        # throttled request. That is where a ~7% burn rate came from on a run
+        # that was merely being rate limited.
+        if not api.ok(st, body):
+            raise LookupFailed("%s: lookup failed (HTTP %s) - not proof of "
+                               "absence" % (sku, st))
         d = api.data(body)
         rows = (d.get("content") or []) if isinstance(d, dict) else []
         for pr in rows:
@@ -1833,7 +1898,14 @@ def ensure_products(api, state, accounts, names=None, bill_type=None):
         # ADOPT BEFORE CREATE: a bare create on an existing SKU returns
         # "Sku Code already exists", and a -R2 retry would mint a duplicate
         # product with its own item ledger, fragmenting the chart of accounts.
-        existing = find_product_by_sku(api, sku)
+        try:
+            existing = find_product_by_sku(api, sku)
+        except LookupFailed as exc:
+            # Throttled, not absent. Leave the account for the next run rather
+            # than deciding anything about it on a request that never landed.
+            print("  DEFER %s: %s" % (sku, exc))
+            held["lookup throttled"] += 1
+            continue
         if existing:
             led = item_ledger_for(api, existing["productId"], mapping)
             if not led:
@@ -2988,12 +3060,20 @@ def ensure_item_products_parallel(state, items, workers=6, by_item=None):
                 rec = {"productId": pid, "skuCode": sku, "name": name,
                        "unit": unit}
             elif any(e in api.err(body) for e in PRODUCT_EXISTS_ERRORS):
-                existing = find_product_by_sku(api, sku)
+                try:
+                    existing = find_product_by_sku(api, sku)
+                except LookupFailed:
+                    # Deferred, NOT burned: the lookup never completed, so it
+                    # says nothing about whether the product exists. Burning on
+                    # this was turning sustained rate limiting into thousands of
+                    # permanently unusable SKUs.
+                    rec, why, deferred = None, None, True
+                    existing = None
                 if existing:
                     rec = {"productId": str(existing["productId"]),
                            "skuCode": sku, "unit": unit, "adopted": True,
                            "name": existing.get("productName") or name}
-                else:
+                elif why is None and not locals().get("deferred"):
                     why = "BURNED - SKU taken by a row adoption cannot see"
             else:
                 why = api.err(body)[:80]
@@ -3094,7 +3174,10 @@ def ensure_item_products(api, state, items):
             # second was silently skipping adoption, leaving the item with no
             # product and its bills unpostable.
             if any(e in api.err(body) for e in PRODUCT_EXISTS_ERRORS):
-                existing = find_product_by_sku(api, sku)
+                try:
+                    existing = find_product_by_sku(api, sku)
+                except LookupFailed as exc:
+                    print("  DEFER %s: %s" % (sku, exc)); continue
                 if existing:
                     led = item_ledger_for(api, existing["productId"],
                                           ITEM_LEDGER_MAPPING)

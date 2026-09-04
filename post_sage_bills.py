@@ -1490,6 +1490,17 @@ SQL_GOODS_SERVICE = """
 SELECT s.invhseq, COUNT(*) FROM sage_service_line s GROUP BY s.invhseq
 """
 
+# The additional-cost lines themselves. They carry an amount and their OWN
+# stated GST rate (0 / 2.5 / 5 / 18) but no item, which is exactly the shape
+# the AP-direct path already books against a CHARGE pseudo-item. The IGST /
+# CGST / SGST coded rows are 0%-rated reimbursements, so they need no special
+# handling - their stated rate is already zero.
+SQL_GOODS_SERVICE_LINES = """
+SELECT s.invhseq, s.invsseq, s.add_cost, s.description, s.amount, s.rate_sum
+  FROM sage_service_line s
+"""
+GOODS_SVC_COLS = ["invhseq", "invsseq", "add_cost", "descr", "amount", "rate"]
+
 GOODS_HDR_COLS = ["invhseq", "vendor", "invoice_raw", "invoice", "bill_date",
                   "due_date", "doc_total", "tax_total", "po_number"]
 GOODS_LINE_COLS = ["invhseq", "invlseq", "item", "item_raw", "descr", "um",
@@ -1526,12 +1537,18 @@ def load_goods_book():
 
     svc = {r["invhseq"] for r in _staging_rows(SQL_GOODS_SERVICE,
                                                ["invhseq", "n"])}
+    svc_lines = collections.defaultdict(list)
+    for r in _staging_rows(SQL_GOODS_SERVICE_LINES, GOODS_SVC_COLS):
+        svc_lines[r["invhseq"]].append(r)
+    print("  %d additional-cost lines on %d documents"
+          % (sum(len(v) for v in svc_lines.values()), len(svc_lines)), flush=True)
 
     book = collections.OrderedDict()
     for h in heads:
         k = (s(h["vendor"]), base_invoice(h["invoice_raw"]))
         book[k] = {"header": h, "lines": lines.get(h["invhseq"], []),
-                   "gl": gl.get(k, {}), "has_service": h["invhseq"] in svc}
+                   "gl": gl.get(k, {}), "has_service": h["invhseq"] in svc,
+                   "svc": svc_lines.get(h["invhseq"], [])}
     print("  %d goods documents" % len(book), flush=True)
     return book
 
@@ -1542,11 +1559,6 @@ def classify_goods(bill, categories=None):
     lines = bill["lines"]
     if not lines:
         return None, "no goods line"
-    if bill["has_service"]:
-        # Additional-cost lines carry no item and would not tie to the goods
-        # total; they need their own treatment before these can be mixed.
-        return None, "document mixes goods and service lines"
-
     cats = {s(l["category"]) for l in lines if s(l["category"])}
     if categories and not (cats & set(categories)):
         return None, "no line in the requested categories"
@@ -1556,11 +1568,34 @@ def classify_goods(bill, categories=None):
     # other legs of the same voucher, not something to book a product against.
     heads = {g: a for g, a in bill["gl"].items()
              if not g.startswith(("2A7TX", "1L8TX", "2A1AP", "5"))}
-    if len(heads) != 1:
-        return None, ("distribution names %d bookable GL accounts" % len(heads))
-    gl = list(heads)[0]
 
-    taxable = q2(sum(D(str(l["ext"] or 0)) for l in lines))
+    # A document carrying additional-cost lines names TWO heads, and they split
+    # cleanly: the goods sit on an inventory head (1L6T / 1L7M / 1L7O) and the
+    # carriage, handling and courier sit on a 4E expense head. Measured over
+    # the window, 2,228 of the 2,245 such documents name exactly those two.
+    #
+    # These used to be refused outright on the grounds that the additional-cost
+    # lines "carry no item and would not tie to the goods total". The first
+    # half is true; the second is not. goods extended + service amount + tax
+    # equals the document total on 2,264 of 2,264 - not most, every one. And a
+    # line with an amount, a stated rate and a GL but no item is exactly what
+    # the AP-direct path already books against a CHARGE pseudo-item.
+    svc = [x for x in bill.get("svc", []) if q2(D(str(x["amount"] or 0))) != 0]
+    svc_gl = None
+    if svc:
+        inv_heads = [g for g in heads if not g.startswith("4E")]
+        exp_heads = [g for g in heads if g.startswith("4E")]
+        if len(inv_heads) != 1 or len(exp_heads) != 1:
+            return None, ("mixed document names %d inventory and %d expense "
+                          "heads" % (len(inv_heads), len(exp_heads)))
+        gl, svc_gl = inv_heads[0], exp_heads[0]
+    else:
+        if len(heads) != 1:
+            return None, ("distribution names %d bookable GL accounts" % len(heads))
+        gl = list(heads)[0]
+
+    taxable = q2(sum(D(str(l["ext"] or 0)) for l in lines)
+                 + sum(D(str(x["amount"] or 0)) for x in svc))
     tax = q2(D(str(h["tax_total"] or 0)))
     total = q2(D(str(h["doc_total"] or 0)))
     roundoff = q2(total - taxable - tax)
@@ -1584,6 +1619,26 @@ def classify_goods(bill, categories=None):
         rates[key] = rate
         items.append(dict(l, ext=ext, qty=qty, unitcost=uc, gl=gl, rate=rate,
                           CNTLINE=key))
+
+    # Additional-cost lines, on the expense head, at their own stated rate.
+    # item is blank so build_payload's item_key() lookup misses and the line
+    # falls back to the GL pseudo-item for svc_gl - the same CHARGE product the
+    # AP-direct path uses. Quantity 1 at the whole amount, as Sage states no
+    # quantity for a charge.
+    for x in svc:
+        amt = q2(D(str(x["amount"] or 0)))
+        rate = q2(D(str(x["rate"] or 0)))
+        if rate not in LEGAL_SLABS:
+            return None, ("additional cost %s states rate %s, not a GST slab"
+                          % (s(x["add_cost"]), rate))
+        key = "SVC:%s/%s" % (x["invhseq"], x["invsseq"])
+        rates[key] = rate
+        items.append({"item": "", "item_raw": "", "um": "OTH", "stock_um": "OTH",
+                      "descr": s(x["descr"]) or s(x["add_cost"]),
+                      "category": "", "hsn": "",
+                      "qty": D(1), "unitcost": amt, "ext": amt,
+                      "gl": svc_gl, "rate": rate, "CNTLINE": key,
+                      "invhseq": x["invhseq"], "invlseq": x["invsseq"]})
 
     hdr = {"bill_date": s(h["bill_date"]), "due_date": s(h["due_date"]) or s(h["bill_date"]),
            "CNTBTCH": s(h["invhseq"]), "CNTITEM": s(h["po_number"]),
@@ -1701,8 +1756,14 @@ def ensure_products(api, state, accounts, names=None, bill_type=None):
         # The item ledger is minted under an accounting group, and which group
         # is decided HERE. An account whose group has no confirmed mapping is
         # HELD, never minted on a default - that default was the defect.
-        bt = (bill_type or SETTLED_ACCOUNTS.get(acct)
-              or account_bill_type(acct, groups))
+        # The account decides where it can; `bill_type` is the caller's
+        # fallback for accounts the 4E test cannot speak to. The goods path
+        # passes PURCHASE for its inventory heads (1L6T*), but the SAME call
+        # now also carries the 4E expense heads of mixed documents' carriage
+        # and handling - and those must follow their own group, not the
+        # caller's default, or freight is booked as a purchase.
+        bt = (SETTLED_ACCOUNTS.get(acct) or account_bill_type(acct, groups)
+              or bill_type)
         if not bt:
             print("  HELD %s: no bill type for account (group %r)"
                   % (sku, groups.get(acct)))
@@ -2573,7 +2634,23 @@ def phase_run(api, state, args, do_post):
     for key, shape in work:
         vendor, invoice = key
         tag = "%s|%s" % (vendor, invoice)
-        if tag in state.posted:
+        prior = state.posted.get(tag)
+        if prior and prior.rstrip().endswith("UNVERIFIED"):
+            # Created but never verified, so the server never wrote the voucher
+            # and the bill shows a payable with ZERO accounting impact. A
+            # re-run used to skip any tag present in posted.log at all, which
+            # meant these could never be repaired - they simply stayed broken.
+            # Verify the bill that already exists instead of skipping it.
+            bid = prior.split("||")[1]
+            vst, vbody = api.post("/bill/%s/verify" % bid)
+            if api.ok(vst, vbody):
+                print("  %-38s RE-VERIFIED %s" % (tag, bid))
+                state.mark(tag, bid)
+            else:
+                print("  %-38s re-verify failed: %s" % (tag, api.err(vbody)))
+                failures.append((tag, "re-verify: %s" % api.err(vbody)))
+            continue
+        if prior:
             continue
         contact = state.xw["contacts"][vendor]
         payload = build_payload(api, key, shape, contact, state.xw["products"])
@@ -3143,7 +3220,21 @@ def phase_goods(api, state, args, do_post):
     for key, shape in work:
         vendor, invoice = key
         tag = "%s|%s" % (vendor, invoice)
-        if tag in state.posted:
+        prior = state.posted.get(tag)
+        if prior and prior.rstrip().endswith("UNVERIFIED"):
+            # Same repair as the AP-direct path: a bill created but never
+            # verified has no voucher, and skipping it on every later run left
+            # it that way permanently.
+            bid = prior.split("||")[1]
+            vst, vbody = api.post("/bill/%s/verify" % bid)
+            if api.ok(vst, vbody):
+                print("  %-34s RE-VERIFIED %s" % (tag, bid))
+                state.mark(tag, bid)
+            else:
+                print("  %-34s re-verify failed: %s" % (tag, api.err(vbody)))
+                failures.append((tag, "re-verify: %s" % api.err(vbody)))
+            continue
+        if prior:
             continue
         missing = sorted({s(l["gl"]) for l in shape["exp"]
                           if s(l["gl"]) not in state.xw["products"]})

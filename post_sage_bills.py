@@ -679,12 +679,96 @@ def normalise_hsn(v):
     if not m_:
         return None
     digits = m_.group(0)[:8]
-    return digits if len(digits) >= 2 else None
+    # Only the 4/6/8-digit HSN LEVELS are accepted. The docstring above recorded
+    # the product validator as "size must be between 2 and 8", but POST /product/
+    # refuses anything else with "HSN length must be 4 or 6 or 8", and Sage holds
+    # 17 codes at an invalid length across 42 items - '5607920' on 21 of them,
+    # then '56603', '600', '852'. Left at their stated length they fail one item
+    # at a time, mid-run: 19 of them had already failed a live goods-masters pass.
+    #
+    # HSN is hierarchical, so the nearest SHORTER level is a strict prefix of the
+    # stated code: 7 digits -> the 6-digit subheading, 5 -> the 4-digit heading.
+    # That drops precision without inventing a digit, which is exactly the
+    # reading already applied to the 10-digit ITC-HS codes above. Padding up
+    # instead would invent one ('5607920' -> '56079200'), and this codebase does
+    # not guess a taxable field.
+    #
+    # Below 4 there is no level left - the 2-digit chapter is refused too - so
+    # those return None and resolve_item_hsn falls through to the sibling line,
+    # the item master, then the flagged 9999 default.
+    for level in (8, 6, 4):
+        if len(digits) >= level:
+            return digits[:level]
+    return None
 
 
 def normalise_pincode(v):
+    """The INDIAN form only: exactly 6 digits, not starting 0. Deliberately
+    strict - a wrong Indian pincode is load-bearing elsewhere. Foreign codes go
+    through normalise_foreign_pincode, which must not relax this one."""
     digits = re.sub(r"\D", "", s(v))
     return digits if re.match(r"^[1-9][0-9]{5}$", digits) else None
+
+
+# Sage's APVEN.CODECTRY is free text ('Hong Kong', 'TAIWAN,', 'USA'); the
+# platform stores an underscored enum. Every value on the right was verified
+# present in yoda.address on this box before being mapped, so none of these is
+# a guess: CHINA 361, UNITED_STATES 281, HONG_KONG 223, VIETNAM 83, TAIWAN 47,
+# SOUTH_KOREA 35, JAPAN 11, TURKEY 11, BANGLADESH 8.
+#
+# Keys are the country stripped to A-Z and upper-cased, so 'Hong Kong',
+# 'HONG KONG' and 'hongkong' all land on the same entry.
+#
+# NOT mapped on purpose: Sage's 'ISLAND' (2 vendors) is not a country - it may
+# be Iceland or Ireland and the two are different places, so those vendors are
+# held for a decision rather than filed under a guess.
+COUNTRY_ENUM = {
+    "HONGKONG": "HONG_KONG",
+    "CHINA": "CHINA",
+    "TAIWAN": "TAIWAN",
+    "BANGLADESH": "BANGLADESH",
+    "SOUTHKOREA": "SOUTH_KOREA",
+    "KOREA": "SOUTH_KOREA",
+    "JAPAN": "JAPAN",
+    "TURKEY": "TURKEY",
+    "VIETNAM": "VIETNAM",
+    "USA": "UNITED_STATES",
+    "UNITEDSTATES": "UNITED_STATES",
+    "UNITEDSTATESOFAMERICA": "UNITED_STATES",
+}
+
+# The platform's own placeholder for a foreign address with no postal code:
+# 217 of its existing international addresses carry it, more than any other
+# value. yoda.address.pin_code is varchar(10) NOT NULL and stores '00000',
+# '10018' and '820000', so the Indian 6-digit rule does NOT apply there.
+FOREIGN_PIN_DEFAULT = "999077"
+
+
+def platform_country(v):
+    """-> (enum, None) or (None, reason). Never guesses a country."""
+    raw = s(v.get("country"))
+    key = re.sub(r"[^A-Z]", "", raw.upper())
+    if not key or key == "NULL":
+        return None, "no country in Sage, so the vendor cannot be filed abroad"
+    got = COUNTRY_ENUM.get(key)
+    if not got:
+        return None, ("country %r is not a country this platform names - "
+                      "needs a decision, not a guess" % raw)
+    return got, None
+
+
+def normalise_foreign_pincode(v):
+    """-> a pin_code the platform accepts for a NON-Indian address, or None.
+
+    Foreign postal codes are not 6 digits: Taiwan's are 5 ('24891'), Japan's
+    carry a hyphen ('530-8605'), and US ones start with 0. normalise_pincode
+    rejects all of those, which is right for India and wrong here - it threw
+    away 5 real codes Sage holds and then held the vendor for having none."""
+    raw = s(v.get("pincode"))
+    if raw in ("", "NULL"):
+        return None
+    keep = re.sub(r"[^0-9A-Za-z-]", "", raw)[:10]
+    return keep or None
 
 
 def sage_date_parts(v):
@@ -2001,7 +2085,13 @@ def ensure_products(api, state, accounts, names=None, bill_type=None):
         }
         st, body = api.post("/product/", payload)
         if not api.ok(st, body):
-            if "Sku Code already exists" in api.err(body):
+            # Both messages, not just the SKU one. POST /product/ reports a
+            # name collision as "Resource already exists" and a taken SKU as
+            # "Sku Code already exists"; testing only the latter meant a name
+            # collision fell through to the bare FAIL below, skipping adoption
+            # and not even recording the account. The goods path already used
+            # this tuple - see PRODUCT_EXISTS_ERRORS.
+            if any(e in api.err(body) for e in PRODUCT_EXISTS_ERRORS):
                 # The SKU is taken by a row that adoption cannot see - a
                 # soft-deleted product, or one that failed hsnCode validation
                 # after being inserted. Retrying as SAGE-<acct>-R2 is what
@@ -2102,11 +2192,40 @@ def ensure_contacts(api, state, vendor_codes, rows=None):
         pin = normalise_pincode(v.get("pincode"))
         city = s(v.get("city")) or ORG_CITY
 
-        # An unresolvable state moves a bill between IGST and CGST+SGST, so it
-        # is HELD, never guessed.
-        if st_name in ("UNKNOWN", "OTHER_COUNTRY"):
+        # UNKNOWN and OTHER_COUNTRY are NOT the same answer and must not share
+        # a branch.
+        #
+        # UNKNOWN means resolve_state could not tell which INDIAN state this
+        # is, and that moves a bill between IGST and CGST+SGST. Still held.
+        #
+        # OTHER_COUNTRY is a positive finding, taken from Sage's own CODECTRY:
+        # the vendor is abroad. Nothing is being guessed, and an import has no
+        # intra-state alternative to get wrong - so holding it was a category
+        # error that cost 64 vendors and ~718 documents. The platform has a
+        # first-class shape for these, verified on this box across 1,517
+        # existing contacts and 339 import bills:
+        #     registrationType INTERNATIONAL, registrationNumber NULL
+        #     profileType      OTHERS        (1,516 of 1,517)
+        #     state            UNKNOWN       (every foreign row; NOT
+        #                                    OTHER_COUNTRY, which has 6 rows
+        #                                    against 631 for this pattern)
+        #     country          the underscored enum
+        # Sage agrees on the tax: 4,358 of these vendors' 4,360 goods lines are
+        # stated at 0%, because import GST is paid at customs, not to the
+        # vendor - which is what the platform's own import bills show too
+        # (0.015% GST over 339 of them).
+        country = "INDIA"
+        international = st_name == "OTHER_COUNTRY"
+        if st_name == "UNKNOWN":
             held.append((code, "state %s (%s) - drives IGST vs CGST+SGST, never guessed"
                          % (st_name, how))); continue
+        if international:
+            country, why_c = platform_country(v)
+            if not country:
+                held.append((code, why_c)); continue
+            # The platform files foreign addresses under state UNKNOWN.
+            st_name = "UNKNOWN"
+            pin = normalise_foreign_pincode(v)
         # address.pin_code is NOT NULL, so a vendor Sage never gave a pincode
         # needs one from somewhere. It is NOT load-bearing on this build: GET
         # /address/pincode/{pin} 404s, so the platform derives nothing from it,
@@ -2118,7 +2237,11 @@ def ensure_contacts(api, state, vendor_codes, rows=None):
         # that decides nothing here.
         pin_placeholder = False
         if not pin:
-            pin = STATE_HEAD_PINCODE.get(st_name)
+            # A foreign address has no Indian state to take a head pincode
+            # from, so STATE_HEAD_PINCODE would miss and hold the vendor over a
+            # field that decides nothing. Use the platform's own placeholder.
+            pin = (FOREIGN_PIN_DEFAULT if international
+                   else STATE_HEAD_PINCODE.get(st_name))
             pin_placeholder = True
             if not pin:
                 held.append((code, "no usable pincode (%r) and no head pincode "
@@ -2133,7 +2256,10 @@ def ensure_contacts(api, state, vendor_codes, rows=None):
             held.append((code, "GSTIN 6th char %s needs a CIN/LLPIN that exists "
                                "neither in Sage nor anywhere on the devbox"
                          % reg_no[5])); continue
-        platform_state = pincode_state(api, pin)
+        # India only: it asks the platform which state a PINCODE belongs to,
+        # and a foreign postal code has no Indian state to agree or disagree
+        # with. Running it on '530-8605' can only produce a false hold.
+        platform_state = None if international else pincode_state(api, pin)
         if platform_state and platform_state != st_name:
             held.append((code, "pincode %s resolves to %s but the GSTIN says %s - "
                                "posting would swap IGST for CGST+SGST"
@@ -2162,9 +2288,10 @@ def ensure_contacts(api, state, vendor_codes, rows=None):
                 "addressTypes": ["SHIPPING_ADDRESS", "BILLING_ADDRESS"],
                 "primaryAddress": True, "status": "ACTIVE", "partyType": "CONTACT",
                 "addressLine1": s(v.get("street1")) or name, "city": city,
-                "state": st_name, "pinCode": pin, "country": "INDIA"}],
+                "state": st_name, "pinCode": pin, "country": country}],
             "metaData": {"migrationSource": "IDEDAT", "sageVendor": code,
-                         "stateSource": how,
+                         "stateSource": how, "country": country,
+                         "sageCountry": s(v.get("country")),
                          "mobileIsPlaceholder": str(not mobiles).lower(),
                          "pinCodeIsPlaceholder": str(pin_placeholder).lower()},
         }
@@ -2192,6 +2319,23 @@ def ensure_contacts(api, state, vendor_codes, rows=None):
             ent = reg_no[5] if reg_type == "GST" else reg_no[3]
             payload["contactBusinessInfo"]["profileType"] = \
                 GSTIN_ENTITY_TO_PROFILE.get(ent, "OTHERS")
+
+        if international:
+            payload["contactBusinessInfo"]["profileType"] = "OTHERS"
+            # An INTERNATIONAL contact is refused without BOTH of these, and
+            # the refusal names neither: it answers "Please select a valid
+            # country" until the top-level country is present, then "Please
+            # select a valid currency" until currencies is. Read off
+            # ContactCreateDto in the live OpenAPI spec (GET /v3/api-docs)
+            # rather than guessed - the field is `currencies`, an ARRAY of ISO
+            # codes, which is why every attempt at a scalar `currency` was
+            # ignored. country is a 242-value enum, currencies a 192-value one.
+            payload["country"] = country
+            # INR, not the vendor's local currency: every amount this loader
+            # posts is Sage's home-currency figure (doc_total / AMTINVCHC) and
+            # the bill declares currencyDto INR at conversionRate 1.0. Naming
+            # HKD or CNY here would contradict the bills we then post.
+            payload["currencies"] = ["INR"]
 
         st_code, body = api.post("/contact/", payload)
         # Several Sage vendor codes legitimately share one GSTIN. Expected, not
@@ -2243,7 +2387,7 @@ def ensure_contacts(api, state, vendor_codes, rows=None):
             "addressTypes": ["BILLING_ADDRESS", "SHIPPING_ADDRESS"],
             "primaryAddress": True, "status": "ACTIVE",
             "addressLine1": s(v.get("street1")) or name, "city": city,
-            "state": st_name, "pinCode": pin, "country": "INDIA",
+            "state": st_name, "pinCode": pin, "country": country,
             "organisationId": ORG_ID})
         addr_id = str((api.data(b2) or {}).get("addressId")) if api.ok(st2, b2) else None
         if not addr_id:
@@ -2261,7 +2405,7 @@ def ensure_contacts(api, state, vendor_codes, rows=None):
             "contactId": cid, "name": name, "ledger": str(led), "ledgerIsLeaf": leaf,
             "addressId": addr_id, "state": st_name, "stateSource": how,
             "city": city, "pinCode": pin, "registrationType": reg_type,
-            "gstin": reg_no or ""}
+            "gstin": reg_no or "", "country": country}
         state.save()
         print("  created %-9s %-38s %-14s %s ledger=%s"
               % (code, name[:38], st_name, reg_type, led))
@@ -2483,7 +2627,13 @@ def build_payload(api, key, shape, contact, products, items=None):
         "gstUsedForBill": ORG_GSTIN,
         "companyBillingAddressDto": COMPANY_ADDR,
         "contactBillingAddressDto": contact_addr,
-        "purchaseType": "DOMESTIC",
+        "purchaseType": ("INTERNATIONAL"
+                         if contact.get("registrationType") == "INTERNATIONAL"
+                         else "DOMESTIC"),
+        # Only on an import, and only from what the contact actually records.
+        **({"originCountry": contact["country"], "destinationCountry": "INDIA"}
+           if contact.get("registrationType") == "INTERNATIONAL"
+           and contact.get("country") else {}),
         # MATERIAL for a raw-material purchase, SERVICE for AP-direct job work.
         # The platform also accepts ASSET; all three are in use in this org.
         # Set below, and only on a PURCHASE.
@@ -3022,7 +3172,12 @@ def resolve_item_hsn(it, by_item=None):
     flagged placeholder."""
     own = normalise_hsn(it.get("hsn"))
     if own:
-        return own, "line"
+        # "line" only when Sage's own code was already a valid level. Where
+        # normalise_hsn had to drop to the next level down, say so: the value is
+        # a prefix of Sage's, not Sage's.
+        stated = re.match(r"\d+", s(it.get("hsn")).strip())
+        n = len(stated.group(0)[:8]) if stated else 0
+        return own, "line" if n == len(own) else "line-snapped-to-level"
     raw = s(it.get("item_raw")) or s(it["item"]).replace("-", "")
     if by_item:
         sib = normalise_hsn(by_item.get(raw) or by_item.get(s(it["item"])))
@@ -3035,11 +3190,49 @@ def resolve_item_hsn(it, by_item=None):
     return GOODS_HSN_DEFAULT, "DEFAULT"
 
 
+def item_product_name(it, name, unit):
+    """-> the productName to create an item product under.
+
+    POST /product/ enforces uniqueness on the NAME, not on skuCode, and answers
+    a name collision with "Resource already exists" - the same message it uses
+    for a taken SKU. The caller then searched for the SKU, correctly found it
+    free, and recorded a false BURNED, leaving the item with no product and its
+    bills unpostable.
+
+    The Sage item master reuses descriptions across distinct item codes as a
+    matter of course, so this is normal data, not bad data: across the goods
+    population 17,222 wanted (item, unit) products reduce to 10,930 distinct
+    descriptions. One description is wanted by 85 different items. Left bare,
+    6,292 products - a third of the master - cannot be created at all. A live
+    goods-masters pass on 4 Sep failed 55 of its first 100 items this way, every
+    one of them a false BURNED.
+
+    Carrying the item code makes the name unique with nothing invented, which is
+    what already keeps the GL pseudo-items distinct ("Power Charges, IDEPL-14").
+
+    The UNIT has to be in there too. FINDINGS-BURNED-SKUS.md proposed the item
+    code alone and reported 0 collisions; re-measured here it leaves 7, because
+    a product is keyed (item, unit) - the platform refuses a line whose unit
+    differs from its product's primary unit - and one item bought in two units
+    wants two products under one name. OTH-GEN-0013 "WHEEL POWDER" is bought in
+    PAC, NOS and KGS, and ID41826X-TB01 in BOX and NOS.
+    Including both makes the name a function of the product key, so it is unique
+    by construction: measured over the full population, 17,222 names for 17,222
+    products, 0 collisions.
+
+    The suffix is appended AFTER truncating the description, never truncated
+    itself - trimming the discriminator off a long description would put the
+    collisions straight back.
+    """
+    suffix = " [%s|%s]" % (s(it["item"]), unit)
+    return name[:200 - len(suffix)] + suffix
+
+
 def _item_payload(it, unit, sku, name, by_item=None):
     stock, cat_id = stock_type_for([s(it.get("category"))])
     _hsn, _hsn_src = resolve_item_hsn(it, by_item)
     p = {
-        "productName": name[:200], "skuCode": sku,
+        "productName": item_product_name(it, name, unit), "skuCode": sku,
         "unit": unit, "unitOfMeasurement": unit,
         "unitPrice": float(q2(D(str(it["unitcost"])))),
         "typeOfStock": stock,
@@ -3115,10 +3308,11 @@ def ensure_item_products_parallel(state, items, workers=6, by_item=None):
             if api.ok(st, body):
                 pid = str(api.data(body).get("productId"))
                 api.call("PATCH", "/product/%s/ACTIVE" % pid)
-                rec = {"productId": pid, "skuCode": sku, "name": name,
+                _pname = item_product_name(it, name, unit)
+                rec = {"productId": pid, "skuCode": sku, "name": _pname,
                        "unit": unit}
                 remember_product({"skuCode": sku, "productId": pid,
-                                  "productName": name})
+                                  "productName": _pname})
             elif any(e in api.err(body) for e in PRODUCT_EXISTS_ERRORS):
                 try:
                     existing = find_product_by_sku(api, sku)
@@ -3153,7 +3347,11 @@ def ensure_item_products_parallel(state, items, workers=6, by_item=None):
                 done["ok"] += 1
             else:
                 done["fail"] += 1
-                state.xw.setdefault("burned", {})[key] = sku
+                # Only a genuine adoption failure is a burned SKU. This used to
+                # record every failure - "no ledger", any API error - so the
+                # burned list could not be read as evidence of anything.
+                if (why or "").startswith("BURNED"):
+                    state.xw.setdefault("burned", {})[key] = sku
                 print("  FAIL %-30s %s" % (sku, why), flush=True)
             # Flush periodically: an interrupted run must resume, not repeat.
             if done["n"] % 50 == 0:
@@ -3210,7 +3408,7 @@ def ensure_item_products(api, state, items):
         _stock, _cat_id = stock_type_for([s(it.get("category"))])
         _hsn, _hsn_src = resolve_item_hsn(it)
         payload = {
-            "productName": name[:200], "skuCode": sku,
+            "productName": item_product_name(it, name, unit), "skuCode": sku,
             "unit": unit, "unitOfMeasurement": unit,
             "unitPrice": float(q2(D(str(it["unitcost"])))),
             "typeOfStock": _stock,
@@ -3267,8 +3465,8 @@ def ensure_item_products(api, state, items):
         if not led:
             print("  FAIL ledger for %s" % sku)
             continue
-        xw[key] = {"productId": pid, "skuCode": sku, "name": name, "unit": unit,
-                   "ledger": str(led)}
+        xw[key] = {"productId": pid, "skuCode": sku, "unit": unit,
+                   "name": item_product_name(it, name, unit), "ledger": str(led)}
         state.save()
         print("  created %-30s %-6s @ %-10s %s"
               % (sku, unit, payload["unitPrice"], name[:34]))

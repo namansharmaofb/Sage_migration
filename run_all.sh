@@ -56,12 +56,42 @@ SQLH=$(sed -n 's/^SQL_HOST=//p' .env | head -1)
 timeout 6 bash -c "</dev/tcp/$DB/9069" 2>/dev/null \
     && echo "  SMEAssist API   reachable" \
     || { echo "  SMEAssist API   UNREACHABLE ($DB:9069) - nothing can post"; exit 3; }
-timeout 6 bash -c "</dev/tcp/$SQLH/1433" 2>/dev/null \
-    && echo "  Sage SQL Server reachable" \
-    || echo "  Sage SQL Server UNREACHABLE ($SQLH) - phases fall back to
-                  idedat_staging and the .psv extract; item HSN from the Sage
-                  item master will be unavailable. Fix SQL_HOST if the box
-                  changed address."
+# The Sage box is a Wi-Fi DHCP host, not a server, so its address MOVES - four
+# times in five days, twice into a different /24. A stale address does not fail
+# cleanly either: the office subnet overlaps the lease range, so an unrelated
+# device answers and you get "connection refused".
+#
+# This used to print a warning and carry on. Carrying on is what wrote 1,419
+# products with the 9999 placeholder HSN: with Sage unreachable item_hsn_map()
+# returns {}, resolve_item_hsn() silently skips its ICITEMO tier, and the run
+# "succeeds" while stamping a permanent misclassification that later runs skip.
+# So now it relocates first, and if it cannot, it says exactly what will be
+# wrong rather than burying it in one line.
+if timeout 6 bash -c "</dev/tcp/$SQLH/1433" 2>/dev/null; then
+    echo "  Sage SQL Server reachable ($SQLH)"
+else
+    echo "  Sage SQL Server not at $SQLH - relocating..."
+    if $PY work/find_sage.py --write --quiet >/dev/null 2>&1; then
+        SQLH=$(sed -n 's/^SQL_HOST=//p' .env | head -1)
+        echo "  Sage SQL Server found at $SQLH (.env updated)"
+    else
+        echo "  Sage SQL Server NOT FOUND on this network."
+        echo "     The Sage laptop is a Wi-Fi DHCP host; it only answers while"
+        echo "     its owner is online. Running now means:"
+        echo "       - item HSN from Sage's ICITEMO is UNAVAILABLE, so every"
+        echo "         item without a line HSN gets the 9999 placeholder, and"
+        echo "         the crosswalk will SKIP it on later runs - permanent"
+        echo "         until repaired by hand."
+        echo "       - vendors come from the staging mirror, which is missing"
+        echo "         469 of the vendors live APVEN has."
+        echo "     Re-run when Sage is up, or pass --allow-stale-sage to accept"
+        echo "     the above."
+        case " $* " in
+            *" --allow-stale-sage "*) echo "     --allow-stale-sage given; continuing." ;;
+            *) exit 3 ;;
+        esac
+    fi
+fi
 $PY - <<'PZ' || exit 3
 import sys; sys.path.insert(0, ".")
 import post_sage_bills as P

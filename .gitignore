@@ -40,6 +40,9 @@ work/repost_needed_po_items.txt
 logs/
 work/logs/
 *.log
+# Pointer files that name the current run log (e.g. work/.gm_current_log).
+# The name ends in "_log", not ".log", so the pattern above misses it.
+*_log
 
 # ---------------------------------------------------------------------------
 # Internal infrastructure records — host names, firewall rules, SQL logins,
@@ -53,11 +56,18 @@ windows-claude-prompt-*.txt
 # ---------------------------------------------------------------------------
 # Editor / tooling / local backups
 # ---------------------------------------------------------------------------
-.claude/
+# .claude/ holds local settings and state, but the agent definitions in
+# .claude/agents/ are team knowledge and belong in the repo. Git cannot
+# re-include through an excluded PARENT, so this excludes the contents
+# rather than the directory itself, then un-excludes agents/.
+.claude/*
+!.claude/agents/
 .idea/
 .vscode/
 *.swp
 *.bak
 *.before-*
+# Same thing under the shorter name used from 4 Sep (.b4-<tag>-<stamp>).
+*.b4-*
 *~
 .DS_Store

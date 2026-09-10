@@ -307,3 +307,178 @@ SELECT
     CAST(SUM(f.AMTTAXHC)  AS decimal(18,2))      AS tax_total,
     COUNT(DISTINCT RTRIM(f.IDVEND))              AS distinct_vendors
 FROM f;
+
+
+-- ============================================================================
+-- AR (SALES) INVOICES - the receivable side, loaded by post_sage_invoices.py
+--
+-- READ THIS BEFORE TRUSTING THE COLUMN NAMES BELOW.
+--
+-- Everything above this line was written against a schema inventoried column
+-- by column (migration-analysis/sage/01-sage-schema-inventory.md), and that
+-- inventory records AR (54 tables) and OE (37 tables) as OUT OF SCOPE - the
+-- migration moved payables only. The names in this section therefore come
+-- from the AR migration brief, NOT from that inventory. They are ASSUMED.
+--
+-- They have since been CHECKED against the live company database by
+-- `./post_sage_invoices.py ar-probe`, and the names below are the corrected
+-- ones. Six of the brief's names were wrong, and the probe is what found them:
+--   AROBL.IDTRXTYPE      -> TRXTYPEID (an invoice is 12 or 14, not 1, and the
+--                           pair splits by SRCEAPPL: 12/AR is keyed straight
+--                           into A/R, 14/OE comes from Order Entry)
+--   ARCUS.LEGALNAME      -> does not exist; BRN carries the GSTIN (188 of 431
+--                           customers), and IDTAXREGI1..5 are empty on ALL rows
+--   OEINVD.INVDLINE      -> LINENUM
+--   OEINVD.UNIT          -> INVUNIT
+--   OEINVD.EXTINVNET     -> EXTINVMISC (the extended amount, despite the name)
+--   OEINVD.RATETAX1      -> TRATE1
+--   IESHPRGH.*           -> INVDOCNUM, PRTOFLOAD, SBNO, SBDATE, and it carries
+--                           NO country at all - the destination comes from
+--                           OEINVH.SHPCOUNTRY
+-- Re-run ar-probe on any other company database before trusting them there.
+--
+-- WINDOW: unlike the AP queries, these are not bounded by a date range but by
+-- the CUTOVER. AROBL holds the open documents; one still open at cutover is a
+-- receivable the new system has to carry, so it loads as an invoice. One
+-- settled before cutover belongs to the opening trial balance and must NOT be
+-- re-posted - posting it would recognise its revenue a second time.
+-- ============================================================================
+
+-- @@name: ar_invoices_header
+SET NOCOUNT ON;
+SELECT
+    RTRIM(o.IDCUST)                     AS customer,
+    -- RTRIM only. Never LTRIM - see the note on bills_header: Sage holds
+    -- ' WPL/25-26/07516' and 'WPL/25-26/07516' as two separate obligations
+    -- with different balances.
+    RTRIM(o.IDINVC)                     AS invoice,
+    o.DATEINVC                          AS inv_date,
+    o.DATEDUE                           AS due_date,
+    CAST(o.AMTINVCHC AS decimal(19,4))  AS home_total,   -- home currency; ties the voucher
+    CAST(o.AMTDUEHC  AS decimal(19,4))  AS home_open,    -- remaining; > 0 = unpaid
+    RTRIM(o.CODECURN)                   AS currency,
+    CAST(h.INVNETWTX AS decimal(19,4))  AS doc_total,    -- ASSUMED
+    CAST(h.INRATE    AS decimal(19,7))  AS fx_rate,
+    -- The export's destination. IESHPRGH has no country column at all.
+    RTRIM(h.SHPCOUNTRY)                 AS dest_country,
+    RTRIM(o.SRCEAPPL)                   AS srce,          -- AR-direct vs OE
+    h.INVUNIQ                           AS oe_uniq
+FROM AROBL o
+-- LEFT JOIN, not JOIN: an invoice keyed straight into AR has no O/E header at
+-- all. Those come back with a null rate and are HELD by the loader's own
+-- identity check rather than silently dropped by an inner join, so they stay
+-- countable in the reconciliation.
+LEFT JOIN OEINVH h ON RTRIM(h.INVNUMBER) = RTRIM(o.IDINVC)
+-- Both values are invoices (TRXTYPETXT '1'). The 12/AR ones have no O/E lines
+-- and cannot be shaped, but they are admitted here ANYWAY so they stay
+-- countable in the reconciliation instead of vanishing behind a narrower
+-- predicate. Measured: 149,739 OE rows (1,827 open) / 28,983 AR rows (87 open).
+WHERE o.TRXTYPEID IN (12, 14)
+  AND o.DATEINVC  < 20260401     -- the cutover
+  AND o.AMTDUEHC  > 0            -- unpaid IS a positive remaining balance
+ORDER BY o.DATEINVC, o.IDCUST, o.IDINVC;
+
+
+-- @@name: ar_invoices_lines
+SET NOCOUNT ON;
+SELECT
+    RTRIM(o.IDCUST)                     AS customer,
+    RTRIM(o.IDINVC)                     AS invoice,
+    d.LINENUM                           AS line_no,
+    RTRIM(d.ITEM)                       AS item,
+    -- DESC is a reserved word, hence the brackets. CR/LF/TAB stripped for the
+    -- same reason as on the AP lines: a newline inside a description once
+    -- truncated a line and forced a revoke-and-repost.
+    REPLACE(REPLACE(REPLACE(RTRIM(d.[DESC]), CHAR(13),' '), CHAR(10),' '), CHAR(9),' ')
+                                        AS descr,
+    RTRIM(d.INVUNIT)                    AS um,
+    CAST(d.QTYSHIPPED AS decimal(19,4)) AS qty,
+    CAST(d.UNITPRICE  AS decimal(19,6)) AS price,
+    -- The extended amount, despite the name: verified line for line against
+    -- the proven invoice, where 1612 x 4.17 = 6722.04 sits in EXTINVMISC and
+    -- EXTOVER, TBASE1 and PRIAMOUNT are all zero.
+    CAST(d.EXTINVMISC AS decimal(19,4)) AS ext,          -- pre-tax
+    -- Cost of goods sold, ALREADY IN THE HOME CURRENCY - the proven invoice's
+    -- four lines sum to INR 631,209.46 on a USD 26,405.41 document, so it must
+    -- never be multiplied by the rate. Carried for reference and stamped into
+    -- the line's metaData; NOT posted. A sales invoice books revenue and the
+    -- debtor, not COGS - that is inventory's own journal.
+    CAST(d.EXTICOST   AS decimal(19,4)) AS cogs,
+    -- The rate Sage STATES. Defect 4.1 applies here exactly as on the AP
+    -- side: read the rate, never divide tax by taxable to infer one.
+    CAST(d.TRATE1     AS decimal(9,4))  AS rate_tax1,
+    RTRIM(i.CATEGORY)                   AS category,
+    RTRIM(i.ITEMNO)                     AS item_raw
+FROM OEINVD d
+JOIN OEINVH h ON h.INVUNIQ = d.INVUNIQ
+JOIN AROBL  o ON RTRIM(o.IDINVC) = RTRIM(h.INVNUMBER) AND o.TRXTYPEID IN (12, 14)
+-- On the unformatted number: OE states the formatted item ('ID-41354-X') and
+-- ICITEM.ITEMNO holds it without separators, exactly as the goods path found.
+LEFT JOIN ICITEM i ON RTRIM(i.ITEMNO) = REPLACE(RTRIM(d.ITEM), '-', '')
+WHERE o.DATEINVC < 20260401
+  AND o.AMTDUEHC > 0
+ORDER BY o.IDCUST, o.IDINVC, d.LINENUM;
+
+
+-- @@name: customers
+-- The aliases are chosen to match the key names post_sage_bills.py's
+-- registration_of() / resolve_state() / platform_country() already read off a
+-- VENDOR row. That is deliberate: it lets a customer's registration, state and
+-- country be resolved by the same evidence-first rules - GSTIN prefix wins,
+-- free-text CODESTTE is corroborated not trusted - instead of a second, weaker
+-- copy of them. Do not rename these to match ARCUS.
+SET NOCOUNT ON;
+SELECT
+    RTRIM(c.IDCUST)    AS customer,
+    RTRIM(c.NAMECUST)  AS name,
+    RTRIM(c.TEXTSTRE1) AS street1,
+    RTRIM(c.TEXTSTRE2) AS street2,
+    RTRIM(c.TEXTSTRE3) AS street3,
+    RTRIM(c.TEXTSTRE4) AS street4,
+    RTRIM(c.NAMECITY)  AS city,
+    RTRIM(c.CODESTTE)  AS state_raw,
+    RTRIM(c.CODEPSTL)  AS pincode,
+    RTRIM(c.CODECTRY)  AS country,
+    RTRIM(c.NAMECTAC)  AS contact_person,
+    RTRIM(c.TEXTPHON1) AS phone1,
+    RTRIM(c.EMAIL1)    AS email1,
+    -- BRN carries the GSTIN, as APVEN.BRN does on the payables side: 188 of
+    -- 431 customers hold a well-formed one, and IDTAXREGI1..5 are populated on
+    -- zero rows. ARCUS has no legal-name column, so legal_name is a literal -
+    -- registration_of() then reads the key it expects and finds it empty.
+    RTRIM(c.BRN)           AS brn_raw,
+    CAST('' AS varchar(1)) AS legal_name,
+    RTRIM(c.CODECURN)  AS currency
+FROM ARCUS c
+ORDER BY c.IDCUST;
+
+
+-- @@name: ar_export_register
+-- The export shipping register from the India localisation. No inventory in
+-- this repo covers it, and the loader treats it as best-effort for that reason
+-- - a rename here holds the exports with a precise reason instead of stopping
+-- the whole load. The loading port and shipping bill are stated on an export,
+-- so it cannot be posted without them. It carries NO destination country;
+-- that comes from OEINVH.SHPCOUNTRY.
+SET NOCOUNT ON;
+SELECT RTRIM(g.INVDOCNUM) AS invoice,
+       RTRIM(g.PRTOFLOAD) AS port_code,
+       RTRIM(g.SBNO)      AS shipping_bill,
+       g.SBDATE           AS shipping_bill_date
+FROM IESHPRGH g
+ORDER BY g.INVDOCNUM;
+
+
+-- @@name: ar_control_counts
+-- The receivable twin of control_counts: what the AR load has to tie to.
+SET NOCOUNT ON;
+SELECT
+    'ar_open_at_cutover'                        AS population,
+    COUNT(*)                                    AS header_rows,
+    COUNT(DISTINCT RTRIM(o.IDCUST))             AS distinct_customers,
+    CAST(SUM(o.AMTINVCHC) AS decimal(19,2))     AS invoiced_total,
+    CAST(SUM(o.AMTDUEHC)  AS decimal(19,2))     AS open_total,
+    MIN(o.DATEINVC)                             AS first_date,
+    MAX(o.DATEINVC)                             AS last_date
+FROM AROBL o
+WHERE o.TRXTYPEID IN (12, 14) AND o.DATEINVC < 20260401 AND o.AMTDUEHC > 0;

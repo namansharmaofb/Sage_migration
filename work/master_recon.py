@@ -189,10 +189,18 @@ def norm_state(v):
     return " ".join(P.s(v).upper().replace("_", " ").split())
 
 
-def sku_of(item, unit):
-    """The SKU the loader posts under, so both sides join on the same string."""
-    return "SAGE-" + P.s(item).replace("-", "").replace("/", "") \
-           + "-" + norm_unit(unit)
+def sku_of(item_raw, unit):
+    """The SKU the loader posts under, so both sides join on the same string.
+
+    The unit MUST go through P.platform_unit(): the loader maps Sage's raw unit
+    onto a measurementUnit code (MTRS -> MTR, PKT -> PAC, anything unmapped ->
+    OTH) before building the SKU. Joining on the raw unit instead put the two
+    sides in different namespaces, so product_missing and product_extra both
+    fired on the SAME product - measured, 8,634 and 8,856 phantom rows against
+    a true 2 and 230.
+    """
+    return "SAGE-%s-%s" % (P.s(item_raw).replace("-", ""),
+                           P.platform_unit(unit))
 
 
 # ------------------------------------------------------------------ sources
@@ -211,6 +219,19 @@ class Sources:
         self.have = {}
         self.missing = {}
         self.origin = {}
+
+    def ensure(self, name):
+        """Load one source by the name NEEDS uses. -> the data, or None."""
+        fn = {
+            "crosswalk": self.crosswalk, "api": self.api,
+            "sage_items": self.sage_items, "sage_hsn": self.sage_hsn,
+            "sage_vendors": self.sage_vendors,
+            "sme_products": self.sme_products,
+            "sme_contacts": self.sme_contacts,
+        }.get(name)
+        if fn is None:
+            raise KeyError("NEEDS names an unknown source: %r" % name)
+        return fn()
 
     def _try(self, name, fn, origin):
         if name in self.have or name in self.missing:
@@ -259,14 +280,18 @@ class Sources:
                     item = P.s(ln.get("item"))
                     if not item:
                         continue
-                    unit = norm_unit(ln.get("um") or ln.get("stock_um"))
-                    if not unit:
-                        continue
+                    # platform_unit, NOT the raw unit - see sku_of(). Note it
+                    # never returns empty (unmapped falls back to OTH), so
+                    # there is no blank-unit case to skip.
+                    unit = P.platform_unit(ln.get("um") or ln.get("stock_um"))
                     # item_raw is Sage's own unformatted number, which is what
-                    # the SKU is built from. Prefer it over re-stripping the
-                    # formatted one.
-                    raw = P.s(ln.get("item_raw")) or item
-                    sku = "SAGE-%s-%s" % (raw, unit)
+                    # the SKU is built from. When it is absent the FORMATTED
+                    # number must be stripped the same way the loader strips
+                    # it - falling back to `item` verbatim left the hyphens in
+                    # and re-created the phantom missing/extra pairs that the
+                    # unit fix removed.
+                    raw = P.s(ln.get("item_raw")) or item.replace("-", "")
+                    sku = sku_of(raw, ln.get("um") or ln.get("stock_um"))
                     rec = out.setdefault(sku, {
                         "item": item, "raw": raw, "unit": unit,
                         "name": P.s(ln.get("descr")),
@@ -349,8 +374,18 @@ class Sources:
                         "unreadable (%s)" % (first, str(exc2)[:120]))
                 rows = [dict(zip(P.STG_VENDOR_COLS, r)) for r in raw]
                 origin = "idedat_staging.sage_vendor"
+            out = {P.s(r["vendor"]): r for r in rows if P.s(r.get("vendor"))}
+            # Every other loader refuses an empty result; this one did not, so
+            # a query that returned nothing would have been read as "Sage and
+            # SMEAssist agree about vendors" across three high-severity checks.
+            if not out:
+                # Claim the origin only AFTER the result is known good -
+                # setting it first listed the source under BOTH sources.read
+                # and sources.unreadable in the same report.
+                raise Unavailable("%s returned no vendors for the window"
+                                  % origin)
             self.origin["sage_vendors"] = origin
-            return {P.s(r["vendor"]): r for r in rows if P.s(r.get("vendor"))}
+            return out
         v = self._try("sage_vendors", load, "Sage APVEN / staging")
         return v
 
@@ -368,9 +403,15 @@ class Sources:
                      "FROM product p WHERE p.organisationId='%s' "
                      "AND p.isDeleted+0=0" % self.org)
             out = {}
+            # Duplicates must be counted BEFORE the dict collapses them. The
+            # check used to run collections.Counter over `out`'s keys, which
+            # are unique by construction, so every count was 1 and it could
+            # never fire while still being reported as run.
+            self.sku_rows = collections.Counter()
             for r in rows:
                 if len(r) != 7 or not r[0]:
                     continue
+                self.sku_rows[r[0]] += 1
                 out[r[0]] = {"sku": r[0], "name": r[1],
                              "unit": norm_unit(r[2]), "hsn": P.s(r[3]),
                              "rate": r[4], "id": r[5], "stock": r[6]}
@@ -501,11 +542,16 @@ def check_ledgers(src, rep, checks):
                       chart of accounts carries a head with no Sage counterpart
       ledger_missing  the crosswalk names a ledger the org does not have
     """
+    # Decide BEFORE loading. This used to fetch the crosswalk and all ~19,500
+    # finance accounts unconditionally, so `--check hsn_default` paid for a
+    # table it never looked at.
+    mine = [c for c in ("ledger_head", "ledger_orphan", "ledger_missing")
+            if c in checks]
+    if not mine:
+        return
     xw = src.crosswalk()
     fa = src.api()
-    for c in ("ledger_head", "ledger_orphan", "ledger_missing"):
-        if c not in checks:
-            continue
+    for c in mine:
         if xw is None:
             rep.skip(c, "crosswalk: " + src.missing.get("crosswalk", "?"))
         elif fa is None:
@@ -603,13 +649,17 @@ def check_products(src, rep, checks):
     if "product_duplicate_sku" in checks:
         # SKUs are the join key for the whole migration; two products on one
         # SKU means adoption picked one arbitrarily and the other holds
-        # stranded balances.
-        seen = collections.Counter(k for k in sme)
-        rep.compared["product_duplicate_sku"] = len(sme)
-        for k, n in seen.items():
-            if n > 1:
-                rep.add("product_duplicate_sku", k, "skuCode", None, n,
-                        "%d products share this SKU" % n)
+        # stranded balances. Counted from the raw rows, not the keyed dict.
+        seen = getattr(src, "sku_rows", None)
+        if seen is None:
+            rep.skip("product_duplicate_sku",
+                     "product rows were not counted (loader did not run)")
+        else:
+            rep.compared["product_duplicate_sku"] = sum(seen.values())
+            for k, n in seen.items():
+                if n > 1:
+                    rep.add("product_duplicate_sku", k, "skuCode", None, n,
+                            "%d products share this SKU" % n)
 
     if "hsn_default" in checks:
         rep.compared["hsn_default"] = len(sme)
@@ -669,13 +719,20 @@ def check_products(src, rep, checks):
                         "against value_recon's per-line gst_rate before "
                         "treating as a tax error" % len(rates))
 
-    if "product_extra" in checks and not limit:
+    if "product_extra" in checks:
+        # Under --limit only a sample of the Sage side was loaded, so every
+        # unsampled product would look "extra". Reporting nothing while still
+        # appearing in checks_run said "no extras found", which is not what
+        # was measured - so say it could not be checked instead.
+        # --limit truncates only the per-item compare loop above; `sage` is
+        # always the FULL set, so extras stay valid under sampling. Skipping
+        # here made every --limit run report partial:true and exit 2.
         rep.compared["product_extra"] = len(sme)
         for k in sme:
             if k.startswith("SAGE-") and k not in sage:
                 rep.add("product_extra", k, "product", None, k,
-                        "SMEAssist has a SAGE-* product Sage does not bill in "
-                        "this window")
+                        "SMEAssist has a SAGE-* product Sage does not "
+                        "bill in this window")
 
 
 def check_hsn_mismatch(src, rep, checks):
@@ -691,13 +748,27 @@ def check_hsn_mismatch(src, rep, checks):
         # HSN differences" is the failure mode this whole file guards against.
         return rep.skip("hsn_mismatch",
                         "ICITEMO: " + src.missing.get("sage_hsn", "?"))
-    items = src.sage_items() or {}
+    # NOT `or {}`. An unreadable Sage side must reach rep.skip(), not iterate
+    # an empty dict and land in checks_run with zero mismatches - that is the
+    # exact "clean when it could not read" failure this file exists to prevent,
+    # and it slipped back in here after being fixed once for sage_hsn.
+    items = src.sage_items()
+    if items is None:
+        return rep.skip("hsn_mismatch",
+                        "sage items: " + src.missing.get("sage_items", "?"))
     for k, srow in items.items():
         mrow = sme.get(k)
         if not mrow:
             continue
-        raw = P.s(srow.get("item"))
-        want = P.normalise_hsn(hsn.get(raw.replace("-", "")) or hsn.get(raw))
+        # Try the same keys resolve_item_hsn does, item_raw FIRST. Looking up
+        # only the formatted number missed every item whose ICITEMO key is the
+        # unformatted one, and those were skipped silently - not compared, not
+        # reported, just absent from the count.
+        item_fmt = P.s(srow.get("item"))
+        item_raw = P.s(srow.get("raw"))
+        want = P.normalise_hsn(
+            hsn.get(item_raw) or hsn.get(item_fmt.replace("-", ""))
+            or hsn.get(item_fmt))
         got = P.s(mrow["hsn"])
         if not want or not got:
             continue
@@ -874,6 +945,31 @@ def main(argv=None):
     src = Sources(org, limit=a.limit)
     rep = Report()
 
+    # Pre-gate on NEEDS. This table used to be documentation only: nothing read
+    # it, so its promise that "an unreadable side is reported as unavailable
+    # rather than as agreement" rested entirely on each check remembering to
+    # guard itself - and twice one did not. Loading a check's sources up front
+    # also stops check_ledgers pulling the whole financeAccount table for a run
+    # that only asked for hsn_default.
+    # `requested` is kept separate from the gated list: rebinding `checks` here
+    # made the report serialise checks_requested == checks_run, so a partial
+    # run described itself as complete.
+    requested = list(checks)
+    gated = []
+    for c in checks:
+        missing_src = [n for n in NEEDS.get(c, ()) if src.ensure(n) is None]
+        if missing_src:
+            # NEEDS calls it "api"; _try caches the failure under the loader's
+            # own name. Without this the ledger checks always skipped with the
+            # useless reason "api: ?" and the real error was dropped.
+            alias = {"api": "sme_finance_accounts"}
+            rep.skip(c, "; ".join(
+                "%s: %s" % (n, src.missing.get(alias.get(n, n), "?"))
+                for n in missing_src))
+        else:
+            gated.append(c)
+    checks = gated
+
     print("\nCHECKS", flush=True)
     check_ledgers(src, rep, checks)
     check_products(src, rep, checks)
@@ -888,7 +984,7 @@ def main(argv=None):
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "organisationId": org,
         "window": {"from": P.DATE_FROM, "to": P.DATE_TO},
-        "checks_requested": checks,
+        "checks_requested": requested,
         "checks_run": ran,
         "checks_unavailable": rep.unavailable,
         "partial": bool(rep.unavailable),

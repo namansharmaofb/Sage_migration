@@ -178,12 +178,25 @@ def main():
     for tag, bid, total, n in plan:
         st, b = live.call("PUT", "/bill/updateStatus/%s/REVOKED"
                           "?remarks=reposting+dropped+receipt+parts" % bid)
-        rv = "ok" if live.ok(st, b) else live.err(b)[:70]
+        if not live.ok(st, b):
+            # DELETE used to run here regardless. If the revoke failed but the
+            # delete succeeded, the bill was gone from SMEAssist while its tag
+            # stayed in posted.log - so goods-post skipped it forever and the
+            # document was permanently lost. Deleting is only safe once the
+            # revoke has actually landed.
+            print("   %-24s revoke=FAILED (%s) - not deleting, left intact"
+                  % (tag, live.err(b)[:60]))
+            continue
         st2, b2 = live.call("DELETE", "/bill/%s" % bid)
-        dl = "ok" if live.ok(st2, b2) else live.err(b2)[:70]
-        print("   %-24s revoke=%-10s delete=%s" % (tag, rv, dl))
-        if live.ok(st, b):
-            done.add(tag)
+        if not live.ok(st2, b2):
+            # Revoked but not deleted: the bill is inert (REVOKED books
+            # nothing), so dropping the tag is still correct - goods-post will
+            # recreate it whole. Say so rather than looking like a clean pass.
+            print("   %-24s revoke=ok delete=FAILED (%s) - revoked bill remains"
+                  % (tag, live.err(b2)[:60]))
+        else:
+            print("   %-24s revoke=ok delete=ok" % tag)
+        done.add(tag)
 
     if not done:
         print("\nnothing was revoked - posted.log left untouched.")

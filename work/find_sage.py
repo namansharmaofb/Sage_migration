@@ -64,24 +64,64 @@ def local_networks():
     subnet the office Wi-Fi hands out, and that has already changed once.
     """
     nets = []
+    skipped = []
     try:
         out = subprocess.run(["ip", "-o", "-4", "addr", "show"],
                              capture_output=True, text=True,
                              timeout=10).stdout
     except Exception:                                           # noqa: BLE001
         return nets
-    for m in re.finditer(r"inet (\d+\.\d+\.\d+\.\d+/\d+)", out):
+    # `ip -o -4 addr` lines look like: "3: wlp2s0    inet 192.168.101.88/22 ..."
+    for line in out.splitlines():
+        m = re.search(r"^\s*\d+:\s+(\S+)\s+.*inet (\d+\.\d+\.\d+\.\d+/\d+)",
+                      line)
+        if not m:
+            continue
+        iface, cidr = m.group(1), m.group(2)
+        # Virtual interfaces are not where an office Wi-Fi laptop lives, and a
+        # Docker bridge is a /16 - 65,534 hosts, about eight minutes of
+        # scanning inside an untimed preflight.
+        if re.match(r"(docker|br-|veth|virbr|lo$|tun|tap|gpd)", iface):
+            continue
         try:
-            net = ipaddress.ip_network(m.group(1), strict=False)
+            net = ipaddress.ip_network(cidr, strict=False)
         except ValueError:
             continue
-        if net.is_loopback or net.num_addresses > 65536:
+        # A /22 is 1,024 addresses and scans in seconds. Anything larger is
+        # not a plausible office access-point subnet; refuse rather than
+        # sweeping it.
+        if net.is_loopback:
+            continue
+        if net.num_addresses > 4096:
+            # Say it rather than silently having nothing to scan: on a host
+            # whose only real interface is a /16, "no host proved it is Sage"
+            # would otherwise mean "nothing was even looked at".
+            skipped.append("%s on %s (%d addresses)"
+                           % (net, iface, net.num_addresses))
             continue
         nets.append(net)
+    if not nets and skipped:
+        print("no scannable subnet: skipped %s - too large to sweep. "
+              "Set SQL_HOST manually." % "; ".join(skipped), file=sys.stderr)
     return nets
 
 
-def port_open(host, port=1433, timeout=PORT_TIMEOUT):
+def sql_port():
+    """The port BOTH the scan and the login use.
+
+    port_open() used to hardcode 1433 while is_sage() honoured SQL_PORT, so on
+    a non-default port nothing was ever found and relocation always reported
+    NOT FOUND.
+    """
+    try:
+        return int(P.cfg("SQL_PORT", 1433))
+    except (TypeError, ValueError):
+        return 1433
+
+
+def port_open(host, port=None, timeout=PORT_TIMEOUT):
+    if port is None:
+        port = sql_port()
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -93,7 +133,7 @@ def is_sage(host, verbose=False):
     """-> (True, detail) only if `host` proves it is the Sage IDEDAT box."""
     try:
         import pymssql
-        cn = pymssql.connect(server=host, port=int(P.cfg("SQL_PORT", 1433)),
+        cn = pymssql.connect(server=host, port=sql_port(),
                              user=P.cfg("SQL_USER"),
                              password=P.cfg("SQL_PASSWORD"),
                              database=P.cfg("SQL_DATABASE"),
@@ -134,8 +174,8 @@ def scan(nets, log):
         for host, ok in zip(hosts, ex.map(port_open, hosts)):
             if ok:
                 open_hosts.append(host)
-    log("  %d host(s) listening on 1433: %s"
-        % (len(open_hosts), ", ".join(open_hosts) or "none"))
+    log("  %d host(s) listening on %d: %s"
+        % (len(open_hosts), sql_port(), ", ".join(open_hosts) or "none"))
     return open_hosts
 
 
@@ -165,7 +205,7 @@ def main(argv=None):
                 return 0
             log("  listening, but not Sage: %s" % detail)
         else:
-            log("  no answer on 1433")
+            log("  no answer on %d" % sql_port())
 
     nets = local_networks()
     if not nets:

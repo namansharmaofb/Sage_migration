@@ -24,6 +24,7 @@ Usage:
     ./post_sage_bills.py verify
 """
 import argparse, calendar, collections, json, os, random, re, sys, time
+import urllib.parse
 from decimal import Decimal as D, ROUND_HALF_UP
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -78,6 +79,13 @@ ORG_CITY   = "Bengaluru"
 ORG_STATE  = "KARNATAKA"        # matches COMPANY_ADDR below; the org's own state
 ORG_STATE  = "KARNATAKA"
 TOKEN      = cfg("SME_TOKEN") or cfg("SME_COOKIE")
+
+# Address enrichment, used by BOTH loaders - see resolve_address_ai. Optional:
+# with no key the enrichment step is skipped and the caller falls back to what
+# it can verify. Use the BACKEND's already-configured key (ai.properties ->
+# gemini.api.key); it is never hardcoded here.
+GEMINI_KEY   = cfg("GEMINI_API_KEY")
+GEMINI_MODEL = cfg("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 DATE_FROM, DATE_TO = 20260101, 20260430
 
@@ -741,6 +749,11 @@ COUNTRY_ENUM = {
 # 217 of its existing international addresses carry it, more than any other
 # value. yoda.address.pin_code is varchar(10) NOT NULL and stores '00000',
 # '10018' and '820000', so the Indian 6-digit rule does NOT apply there.
+#
+# It is NOT a universal placeholder, and treating it as one is what kept three
+# receivables buyers held: 999077 is Hong Kong's, and the platform's geo table
+# resolves it for HONG_KONG and CHINA only. Every use of it goes through
+# platform_knows_pincode first for exactly that reason.
 FOREIGN_PIN_DEFAULT = "999077"
 
 
@@ -769,6 +782,335 @@ def normalise_foreign_pincode(v):
         return None
     keep = re.sub(r"[^0-9A-Za-z-]", "", raw)[:10]
     return keep or None
+
+
+# A foreign postal code is not stored, it is RESOLVED. GET /pincode/{code}
+# ?country={COUNTRY} looks the pair up in the platform's own geo table, and the
+# address create refuses anything that misses it with "Invalid Zipcode" - the
+# same string, from the same table. (An Indian miss reads "Invalid Pincode":
+# different message, different table.) That is what took 21 payables vendors
+# and 3 receivables buyers - a real code Sage holds, refused because the
+# platform has never heard of it.
+#
+# Probed against the live table, it is sparse and country-shaped:
+#     JAPAN          hyphenated NNN-NNNN: '530-8605' resolves, '5308605' does not
+#     TAIWAN         the THREE-digit district: '406' resolves, '24891' does not
+#     UNITED_STATES  the 5-digit ZIP, well covered (6 of 6 probed)
+#     HONG_KONG      999077 and 000000
+#     CHINA          999077, plus real 6-digit codes (310000, 518000)
+#     VIETNAM        70000, 700000
+#     BANGLADESH     1000, 1212
+#     SOUTH_KOREA    NOTHING - 0 hits in 65 probes spanning 01000-63999
+#     TURKEY         NOTHING - 0 hits in 82 probes spanning 01000-81999
+#
+# So FOREIGN_PIN_DEFAULT is NOT a universal placeholder: 999077 resolves for
+# HONG_KONG and CHINA and nowhere else, which is why the receivables path's
+# blind retry onto it still lost its three buyers. Every code is now CHECKED
+# before the contact is created, rather than discovered by having the address
+# create refuse it - a refusal there leaves a contact with no address, which
+# the payables path has to roll back and the receivables path cannot delete
+# at all.
+
+# Reshapings of ONE recorded code into the form its country's table holds.
+# Country-specific, and each verified against the live table - not a general
+# "try a prefix", which could resolve to a different place. A digit is never
+# added: this is the same nearest-level reading resolve_item_hsn applies.
+FOREIGN_PIN_RESHAPE = {
+    # Sage writes Japan's code both ways; the table only holds the hyphenated.
+    "JAPAN":  lambda d: ["%s-%s" % (d[:3], d[3:])] if len(d) == 7 else [],
+    # Taiwan's 5- and 6-digit codes are the 3-digit district plus a delivery
+    # zone, and the district is the level the table is populated at.
+    "TAIWAN": lambda d: [d[:3]] if len(d) >= 3 else [],
+}
+
+_PIN_LOOKUP_CACHE = {}
+
+
+def platform_pincode_row(api, country, code):
+    """-> the geo table's row for this (code, country), or None. Cached."""
+    key = (country, code)
+    if key not in _PIN_LOOKUP_CACHE:
+        st, body = api.get("/pincode/%s?country=%s"
+                           % (urllib.parse.quote(str(code), safe=""), country))
+        d = api.data(body) if api.ok(st, body) else None
+        _PIN_LOOKUP_CACHE[key] = d if isinstance(d, dict) and d.get("pincode") else None
+    return _PIN_LOOKUP_CACHE[key]
+
+
+def platform_knows_pincode(api, country, code):
+    """Does the platform's geo table resolve this (code, country)?"""
+    return platform_pincode_row(api, country, code) is not None
+
+
+def _same_city(a, b):
+    """'New Taipei' is 'NEW TAIPEI CITY'. It is NOT 'Taipei'.
+
+    Equality after normalising, never containment: a Taipei vendor was filed
+    under 236 - New Taipei's code, an adjacent and different city - because the
+    enrichment offered it and the table resolved it. A code is only as good as
+    the place it resolves TO.
+    """
+    def norm(x):
+        x = re.sub(r"[^A-Z]", "", s(x).upper())
+        return x[:-4] if x.endswith("CITY") and len(x) > 4 else x
+    na, nb = norm(a), norm(b)
+    return bool(na) and na == nb
+
+
+def verified_foreign_pincode(api, v, country, name, enrich=True, enr=None):
+    """-> (code, source) the platform actually resolves, or (None, why).
+
+    Order: Sage's own code, in every form that country's table is known to be
+    populated at; then the enrichment's, if a key is configured; then the
+    platform's own placeholder. Every one is CHECKED against the table before
+    it is used, so the enrichment can only ever contribute a postal code the
+    platform independently confirms - it cannot invent one that sticks.
+    """
+    tried, cands, note = [], [], ""
+    raw = normalise_foreign_pincode(v)
+    if raw:
+        cands.append((raw, "sage"))
+        digits = re.sub(r"\D", "", raw)
+        if digits and digits != raw:
+            cands.append((digits, "sage-digits"))
+        for shaped in FOREIGN_PIN_RESHAPE.get(country, lambda d: [])(digits):
+            cands.append((shaped, "sage-reshaped-to-%s-level" % country.lower()))
+    for cand, why in cands:
+        if cand in tried:
+            continue
+        tried.append(cand)
+        if platform_knows_pincode(api, country, cand):
+            return cand, why
+    # Sage's code is absent, or the table does not hold it.
+    #
+    # `enr` is only ever REUSED here, never requested: an entity-level answer
+    # costs one call per vendor and cannot be shared, and the enrichment budget
+    # is 20 calls a DAY (see _gemini_json). The city question below answers the
+    # same need for every vendor in that city at once, so that is the one this
+    # path spends on. A caller that has already paid for an entity answer for
+    # its own reasons - the receivables path needs a street - passes it in and
+    # its postal code is used for free.
+    if enr:
+        got = re.sub(r"[^0-9A-Za-z-]", "", s(enr.get("postalCode")))[:10]
+        if got and got not in tried:
+            tried.append(got)
+            row = platform_pincode_row(api, country, got)
+            where = s(v.get("city")) or s(enr.get("city"))
+            if row and (not where or _same_city(row.get("city"), where)):
+                return got, "gemini-enriched:%s" % s(enr.get("confidence"))
+    # Still nothing, but Sage often states a CITY even where it states no code
+    # (Dhaka, Ho Chi Minh City, New Taipei City). "What are the postal codes of
+    # this city" is a far easier and far safer question than "what is this
+    # company's registered address" - it is not a claim about the vendor at all,
+    # only about the city Sage has already put it in - and the answer still has
+    # to survive the platform's table. This is what the placeholder below is
+    # otherwise standing in for, and a real code for the right city beats
+    # 999077, which is Hong Kong's.
+    city = s(v.get("city"))
+    if enrich and GEMINI_KEY and city and city.upper() != country.replace("_", " "):
+        cands, why = city_postal_codes(city, country)
+        if why:
+            note = why
+        for cand in cands:
+            if cand in tried:
+                continue
+            tried.append(cand)
+            row = platform_pincode_row(api, country, cand)
+            # It has to resolve, AND resolve to the city Sage put this party
+            # in - see _same_city.
+            if row and _same_city(row.get("city"), city):
+                return cand, "gemini-city:%s" % city
+    if FOREIGN_PIN_DEFAULT not in tried:
+        tried.append(FOREIGN_PIN_DEFAULT)
+        if platform_knows_pincode(api, country, FOREIGN_PIN_DEFAULT):
+            return FOREIGN_PIN_DEFAULT, "platform-placeholder"
+    # A quota failure is NOT the same answer as "there is no such code", and
+    # must not be reported as one: the first is finished by re-running, the
+    # second needs a row added to the platform's geo table.
+    return None, ("no postal code the platform resolves for %s - tried %s. Its "
+                  "geo table is what refuses these (\"Invalid Zipcode\"), and "
+                  "for some countries it holds nothing at all; the fix is a row "
+                  "in that table, not a different code here%s"
+                  % (country, ", ".join(repr(t) for t in tried) or "nothing",
+                     " [%s]" % note if note else ""))
+
+
+# The backend's key is on a FREE tier, and the binding limit is measured in
+# DAYS, not minutes: the 429 names its own quotaId as
+# GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue 20. Twenty calls
+# a day, per model, for the whole project.
+#
+# That is the fact this path is built around. It is why the pincode question is
+# asked about a CITY (one answer serves every vendor in it, and it is cached)
+# rather than about each vendor, and why a caller that already holds an entity
+# answer passes it in instead of a second call being made.
+#
+# Past the cap every call answers 429. Swallowed, that reads exactly like
+# "there is no postal code for this party" - so a run that tripped the quota
+# would hold vendors with a reason that is not the real one. This codebase has
+# already paid for four sources of false failure; this is not becoming the
+# fifth. So a 429 is reported AS a 429, and a per-day one stops the asking
+# rather than spending the run in backoff.
+#
+# The quota is PER MODEL, so GEMINI_MODEL is also the lever for more headroom.
+GEMINI_MIN_INTERVAL = 3.2               # keeps a burst under any per-minute cap
+GEMINI_MAX_RETRY = 4
+_GEMINI = {"last": 0.0, "blocked_until": 0.0, "lock": None}
+
+
+def _gemini_retry_delay(body):
+    """Google states its own backoff in the error detail; prefer it."""
+    for d in ((body or {}).get("error") or {}).get("details") or []:
+        m = re.match(r"^([0-9.]+)s$", s(d.get("retryDelay")))
+        if m:
+            return min(120.0, float(m.group(1)) + 1.0)
+    return None
+
+
+def _gemini_json(prompt, schema):
+    """-> (parsed JSON dict, "") or (None, why). `why` is caller-visible."""
+    if not GEMINI_KEY:
+        return None, "no GEMINI_API_KEY"
+    if _GEMINI["lock"] is None:
+        import threading
+        _GEMINI["lock"] = threading.Lock()
+    if time.time() < _GEMINI["blocked_until"]:
+        return None, "enrichment quota was exhausted earlier in this run"
+    import requests
+    for attempt in range(1, GEMINI_MAX_RETRY + 1):
+        with _GEMINI["lock"]:
+            gap = GEMINI_MIN_INTERVAL - (time.time() - _GEMINI["last"])
+            if gap > 0:
+                time.sleep(gap)
+            _GEMINI["last"] = time.time()
+        try:
+            r = requests.post(
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                "%s:generateContent" % GEMINI_MODEL,
+                params={"key": GEMINI_KEY},
+                json={"contents": [{"parts": [{"text": prompt}]}],
+                      "generationConfig": {"responseMimeType": "application/json",
+                                           "responseSchema": schema}},
+                timeout=40)
+        except Exception as exc:                                # noqa: BLE001
+            return None, "enrichment call failed: %s" % str(exc)[:60]
+        if r.status_code == 429:
+            try:
+                body = r.json()
+            except ValueError:
+                body = {}
+            delay = _gemini_retry_delay(body)
+            # The 429 names its own quotaId; a per-day one reads
+            # "...PerDayPerProjectPerModel-FreeTier".
+            per_day = "PerDay" in str(body)
+            if per_day or attempt >= GEMINI_MAX_RETRY:
+                # A per-DAY cap will not clear inside this run, so waiting it
+                # out is just a slower way to fail. Stop asking, and say which
+                # kind of exhaustion it was - one is finished by re-running
+                # tomorrow, the other by re-running now.
+                _GEMINI["blocked_until"] = time.time() + (86400 if per_day
+                                                          else 300)
+                return None, ("enrichment quota exhausted (%s) - nothing was "
+                              "asked for this one"
+                              % ("the free tier's 20 calls per DAY, so a re-run "
+                                 "today will not help either" if per_day else
+                                 "rate limited after %d tries" % attempt))
+            time.sleep(delay or min(60.0, 5.0 * 2 ** (attempt - 1)))
+            continue
+        if r.status_code >= 300:
+            return None, "enrichment HTTP %d" % r.status_code
+        try:
+            txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            return json.loads(txt), ""
+        except Exception:                                       # noqa: BLE001
+            return None, "enrichment returned no usable JSON"
+    return None, "enrichment quota exhausted"
+
+
+_CITY_PIN_CACHE = {}
+
+
+def city_postal_codes(city, country):
+    """-> postal codes that serve a CITY, most central first. Never verified
+    here - the caller puts every one through the platform's own table, so the
+    worst this can do is propose codes that all miss.
+
+    Deliberately narrower than resolve_address_ai: it is asked about a place,
+    not about a party, so it makes no claim about the vendor beyond the city
+    Sage already recorded for it.
+    """
+    key = (city.upper(), country)
+    if key in _CITY_PIN_CACHE:
+        return _CITY_PIN_CACHE[key], ""
+    schema = {"type": "OBJECT", "required": ["postalCodes"],
+              "properties": {"postalCodes": {"type": "ARRAY",
+                                             "items": {"type": "STRING"}}}}
+    # Ask WIDE. The call costs the same whether it returns 8 codes or 24, the
+    # platform's table is sparse enough that the first few rarely land in it,
+    # and every candidate is verified anyway - a wrong one simply misses. Asked
+    # for 8, New Taipei came back 220-235 and the one code the table actually
+    # holds for it, 236, was just off the end of the list.
+    data, why = _gemini_json(
+        "List up to 24 real postal codes serving %s, %s - the central ones "
+        "first, then the surrounding districts. Write each exactly as that "
+        "country writes it (keep any hyphen). If you are not sure the city "
+        "exists, return an empty list."
+        % (city, country.replace("_", " ").title()), schema)
+    out = []
+    for c in ((data or {}).get("postalCodes") or [])[:24]:
+        c = re.sub(r"[^0-9A-Za-z-]", "", s(c))[:10]
+        if c and c not in out:
+            out.append(c)
+            # Tried at the same country-specific levels as the Sage code.
+            digits = re.sub(r"\D", "", c)
+            for shaped in FOREIGN_PIN_RESHAPE.get(country, lambda d: [])(digits):
+                if shaped not in out:
+                    out.append(shaped)
+    if not why:
+        _CITY_PIN_CACHE[key] = out          # only cache a real answer
+    return out, why
+
+
+def resolve_address_ai(company, city=None, country=None):
+    """-> an address dict, or None. Confidence-gated; refuses to fabricate.
+
+    Lives HERE, not on the receivables side, because both loaders need it and
+    post_sage_invoices imports this module rather than the other way round.
+
+    Fenced hard: Sage holds no address for most foreign parties and the
+    platform's address rows are NOT NULL, so this is the one place the codebase
+    knowingly relaxes "nothing is guessed". It is told to set confidence=LOW
+    rather than guess a street, its own LOW answers are discarded here, and
+    every contact built from one is stamped in metaData so it can be re-sourced
+    from a real document later. A postal code it returns is additionally put
+    through the platform's own geo table before anything is filed under it.
+    """
+    schema = {"type": "OBJECT",
+              "required": ["city", "country", "confidence"],
+              "properties": {"addressLine1": {"type": "STRING"},
+                             "city": {"type": "STRING"},
+                             "stateOrRegion": {"type": "STRING"},
+                             "country": {"type": "STRING"},
+                             "postalCode": {"type": "STRING"},
+                             "confidence": {"type": "STRING",
+                                            "enum": ["HIGH", "MEDIUM", "LOW"]}}}
+    where = ""
+    if city or country:
+        # What Sage already states, so the answer is pinned to the right entity
+        # rather than a same-named company somewhere else.
+        where = (" It is located in %s."
+                 % ", ".join(x for x in (s(city) or None,
+                                         (country or "").replace("_", " ").title()
+                                         or None) if x))
+    prompt = ("Give the primary registered business address of \"%s\".%s If you "
+              "cannot identify the exact legal entity, set confidence=LOW and "
+              "leave the fields blank. Never guess a street." % (company, where))
+    a, _why = _gemini_json(prompt, schema)
+    if not a:
+        return None
+    if s(a.get("confidence")).upper() == "LOW" or not s(a.get("city")):
+        return None
+    return a
 
 
 def sage_date_parts(v):
@@ -910,30 +1252,41 @@ class Api:
 # ============================================================================
 
 class State:
-    def __init__(self):
+    """The crosswalk of live ids plus the append-only posted log.
+
+    The two paths are parameters, defaulting to the AP files, because the AR
+    (sales) loader in post_sage_invoices.py keeps its OWN pair. They must not
+    share: the AP crosswalk keys contacts by Sage VENDOR code and the AR one by
+    CUSTOMER code, and one process writing both files would have to hold both
+    populations in memory to save either without truncating it.
+    """
+
+    def __init__(self, crosswalk=None, posted_log=None):
+        self.crosswalk = crosswalk or CROSSWALK
+        self.posted_log = posted_log or POSTED_LOG
         self.xw = {"products": {}, "contacts": {}, "series": {}}
-        if os.path.exists(CROSSWALK):
-            with open(CROSSWALK, encoding="utf-8-sig") as fh:
+        if os.path.exists(self.crosswalk):
+            with open(self.crosswalk, encoding="utf-8-sig") as fh:
                 self.xw.update(json.load(fh))
         self.posted = {}
-        if os.path.exists(POSTED_LOG):
-            with open(POSTED_LOG) as fh:
+        if os.path.exists(self.posted_log):
+            with open(self.posted_log) as fh:
                 for ln in fh:
                     if ln.strip():
                         self.posted[ln.split("||")[0]] = ln.strip()
 
     def save(self):
         os.makedirs(WORK, exist_ok=True)
-        tmp = CROSSWALK + ".tmp"
+        tmp = self.crosswalk + ".tmp"
         with open(tmp, "w") as fh:
             json.dump(self.xw, fh, indent=1, sort_keys=True)
-        os.replace(tmp, CROSSWALK)
+        os.replace(tmp, self.crosswalk)
 
     def mark(self, key, value):
         """Append and FLUSH immediately - an interrupted run must resume, not
         re-attempt."""
         os.makedirs(WORK, exist_ok=True)
-        with open(POSTED_LOG, "a") as fh:
+        with open(self.posted_log, "a") as fh:
             fh.write("%s||%s\n" % (key, value))
             fh.flush()
             os.fsync(fh.fileno())
@@ -2225,24 +2578,33 @@ def ensure_contacts(api, state, vendor_codes, rows=None):
                 held.append((code, why_c)); continue
             # The platform files foreign addresses under state UNKNOWN.
             st_name = "UNKNOWN"
-            pin = normalise_foreign_pincode(v)
-        # address.pin_code is NOT NULL, so a vendor Sage never gave a pincode
-        # needs one from somewhere. It is NOT load-bearing on this build: GET
-        # /address/pincode/{pin} 404s, so the platform derives nothing from it,
-        # and the state we send is stored verbatim (the org holds an address
-        # filed OTHER_COUNTRY under a Chennai pincode). So fall back to the
-        # head post office of the state the GSTIN has already proven - which
-        # keeps the vendor in the right state, unlike the org's own 560059 -
-        # and flag it, rather than hold 64 vendors and 671 bills over a field
-        # that decides nothing here.
+        # A DOMESTIC pincode must EXIST in the platform's table (a miss reads
+        # "Invalid Pincode"), but nothing is derived from it - the state is
+        # stored exactly as sent, which is how the org came to hold an address
+        # filed OTHER_COUNTRY under a Chennai pincode. So a vendor Sage never
+        # gave one keeps the head post office of the state its GSTIN has already
+        # proven - a real code, and in the right state, unlike the org's own
+        # 560059 - flagged, rather than held over a field that decides nothing.
+        #
+        # A FOREIGN one is a different question and is not free: the address
+        # create resolves it against the platform's geo table and refuses a miss
+        # with "Invalid Zipcode". So it is settled here, BEFORE the contact is
+        # created - see verified_foreign_pincode. That is what turns the 21
+        # vendors this used to lose into either a posted address or a hold that
+        # names the real blocker, and it never leaves an orphan contact behind.
         pin_placeholder = False
-        if not pin:
-            # A foreign address has no Indian state to take a head pincode
-            # from, so STATE_HEAD_PINCODE would miss and hold the vendor over a
-            # field that decides nothing. Use the platform's own placeholder.
-            pin = (FOREIGN_PIN_DEFAULT if international
-                   else STATE_HEAD_PINCODE.get(st_name))
+        pin_source = "sage"
+        if international:
+            pin, pin_source = verified_foreign_pincode(api, v, country, name)
+            if not pin:
+                held.append((code, pin_source)); continue
+            # A reshaped Sage code is still the vendor's own, one level
+            # coarser; only an enriched or placeholder value is not.
+            pin_placeholder = not pin_source.startswith("sage")
+        elif not pin:
+            pin = STATE_HEAD_PINCODE.get(st_name)
             pin_placeholder = True
+            pin_source = "state-head-pincode"
             if not pin:
                 held.append((code, "no usable pincode (%r) and no head pincode "
                                    "for state %s" % (s(v.get("pincode")), st_name)))
@@ -2293,7 +2655,8 @@ def ensure_contacts(api, state, vendor_codes, rows=None):
                          "stateSource": how, "country": country,
                          "sageCountry": s(v.get("country")),
                          "mobileIsPlaceholder": str(not mobiles).lower(),
-                         "pinCodeIsPlaceholder": str(pin_placeholder).lower()},
+                         "pinCodeIsPlaceholder": str(pin_placeholder).lower(),
+                         "pinCodeSource": pin_source},
         }
         # Copied from another org's contact for the same legal entity, never
         # generated. Recorded in metaData so any row carrying one can be found
@@ -2389,9 +2752,42 @@ def ensure_contacts(api, state, vendor_codes, rows=None):
             "addressLine1": s(v.get("street1")) or name, "city": city,
             "state": st_name, "pinCode": pin, "country": country,
             "organisationId": ORG_ID})
-        addr_id = str((api.data(b2) or {}).get("addressId")) if api.ok(st2, b2) else None
+        # str(None) is the TRUTHY string "None". A 2xx whose body carries no
+        # addressId therefore produced addr_id == "None", which passed the
+        # `if not addr_id` guard below and was committed to the crosswalk as a
+        # permanent, unusable address id. Take the value out first, and only
+        # stringify something that is actually there.
+        _addr = (api.data(b2) or {}).get("addressId") if api.ok(st2, b2) else None
+        addr_id = str(_addr) if _addr else None
         if not addr_id:
-            held.append((code, "billing address failed: %s" % api.err(b2))); continue
+            # The contact EXISTS at this point but is about to be held, and a
+            # held vendor is never written to the crosswalk. Left as-is it is
+            # an orphan: unusable (a bill needs addressId), invisible to the
+            # skip guard, and re-created on every later run. Roll it back so a
+            # retry starts clean. 21 vendors reach here on foreign pincodes
+            # ("Invalid Zipcode"), and they have no GSTIN, so the reuse-by-
+            # GSTIN branch above cannot catch them on the way back through.
+            why = "billing address failed: %s" % api.err(b2)
+            # Roll back ONLY on a definite rejection, using THIS api's own
+            # convention rather than HTTP class: Api.call returns None for a
+            # connection error and for exhausted retries, and has already
+            # retried the transient shapes (403/rate-limit, and a 500 with no
+            # errorMessage). So any non-None status is a considered answer -
+            # including the 500-with-errorMessage this service uses for a
+            # business refusal, which is why a `400 <= st < 500` test would
+            # never fire and would leave the leak wide open.
+            definite = st2 is not None
+            if definite:
+                dst, dbody = api.call("DELETE", "/contact/%s" % cid)
+                if not api.ok(dst, dbody):
+                    # Could not roll back - record the id so it can be found
+                    # and cleaned by hand rather than silently accumulating.
+                    why += " (orphan contact %s left behind: %s)" % (
+                        cid, api.err(dbody)[:80])
+            else:
+                why += (" (transient: contact %s KEPT, not rolled back - "
+                        "re-run to finish it)" % cid)
+            held.append((code, why)); continue
 
         # Nothing else creates this row and its absence surfaces much later,
         # from the BILL module. Every Sage vendor is SUBJTOWTHH=0, so NONE.
@@ -2598,7 +2994,18 @@ def build_payload(api, key, shape, contact, products, items=None):
         "addressId": contact["addressId"], "partyId": contact["contactId"],
         "partyType": "CONTACT", "addressLine1": contact["name"],
         "city": contact.get("city") or ORG_CITY, "state": contact["state"],
-        "pinCode": contact.get("pinCode") or "560059", "country": "INDIA",
+        # An INTERNATIONAL contact must not be described as being in India on
+        # the same payload that sets purchaseType=INTERNATIONAL and
+        # originCountry=<foreign>. Only the contact's OWN recorded country is
+        # used, and only when it is international: APVEN.CODECTRY is free text
+        # that holds city names ("Mumbai"), so it is not trustworthy for a
+        # domestic vendor - those keep INDIA, which is what the platform sets
+        # for them anyway (ContactServiceImpl overwrites country from the org
+        # for every non-INTERNATIONAL registration type).
+        "pinCode": contact.get("pinCode") or "560059",
+        "country": (contact.get("country") or "INDIA")
+                   if contact.get("registrationType") == "INTERNATIONAL"
+                   else "INDIA",
         "addressTypes": ["BILLING_ADDRESS"],
         # Address DTOs are rejected without this; the error misleadingly reads
         # "Address : null is not active".

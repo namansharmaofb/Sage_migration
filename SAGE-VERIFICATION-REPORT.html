@@ -1,0 +1,1608 @@
+<title>Sage 300 Migration Verification</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,600;0,700;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --paper:#F5F7F8; --surface:#FFFFFF; --surface-2:#EDF1F3;
+  --ink:#13181C; --ink-2:#3B464E; --muted:#5E6B73; --faint:#8695A0;
+  --rule:#D8E0E4; --rule-strong:#B9C6CD;
+  --accent:#14596B; --accent-soft:#E2EFF2; --accent-ink:#0C3D4A;
+  --ok:#2C6A4F; --ok-soft:#E1F0E7;
+  --warn:#8F5E0C; --warn-soft:#F8EEDA;
+  --crit:#9C3226; --crit-soft:#F8E5E2;
+  --new:#23557F; --new-soft:#E3EDF6;
+  --grey:#5E6B73; --grey-soft:#E8ECEE;
+  --shadow:0 1px 2px rgba(19,24,28,.06),0 4px 14px rgba(19,24,28,.05);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#0D1113; --surface:#141A1D; --surface-2:#1B2327;
+  --ink:#E4EAEC; --ink-2:#BCC7CC; --muted:#93A1A8; --faint:#6E7D85;
+  --rule:#263136; --rule-strong:#38464C;
+  --accent:#5AB4C9; --accent-soft:#123039; --accent-ink:#9BD4E1;
+  --ok:#6FBF95; --ok-soft:#12291F;
+  --warn:#D9A648; --warn-soft:#2C2313;
+  --crit:#E0796B; --crit-soft:#2E1815;
+  --new:#7FB0DC; --new-soft:#12222F;
+  --grey:#93A1A8; --grey-soft:#1D2529;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.3);
+}}
+:root[data-theme="dark"]{
+  --paper:#0D1113; --surface:#141A1D; --surface-2:#1B2327;
+  --ink:#E4EAEC; --ink-2:#BCC7CC; --muted:#93A1A8; --faint:#6E7D85;
+  --rule:#263136; --rule-strong:#38464C;
+  --accent:#5AB4C9; --accent-soft:#123039; --accent-ink:#9BD4E1;
+  --ok:#6FBF95; --ok-soft:#12291F;
+  --warn:#D9A648; --warn-soft:#2C2313;
+  --crit:#E0796B; --crit-soft:#2E1815;
+  --new:#7FB0DC; --new-soft:#12222F;
+  --grey:#93A1A8; --grey-soft:#1D2529;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.3);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,sans-serif;
+  font-size:16px;line-height:1.62;-webkit-font-smoothing:antialiased}
+.wrap{display:grid;grid-template-columns:1fr;max-width:1500px;margin:0 auto}
+@media(min-width:1180px){.wrap{grid-template-columns:264px minmax(0,1fr);gap:56px}}
+/* ---- nav rail ---- */
+nav.toc{display:none}
+@media(min-width:1180px){nav.toc{display:block;position:sticky;top:0;align-self:start;
+  max-height:100vh;overflow-y:auto;padding:44px 0 44px 28px;font-size:12.5px;line-height:1.5}}
+nav.toc h4{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--faint);margin:20px 0 8px;font-weight:600}
+nav.toc h4:first-child{margin-top:0}
+nav.toc a{display:block;color:var(--muted);text-decoration:none;padding:2.5px 0;
+  border-left:2px solid transparent;padding-left:10px;margin-left:-10px}
+nav.toc a:hover{color:var(--accent);border-left-color:var(--accent)}
+main{padding:44px 22px 120px;min-width:0}
+@media(min-width:760px){main{padding:56px 40px 140px}}
+@media(min-width:1180px){main{padding:56px 48px 160px 0}}
+.measure{max-width:74ch}
+/* ---- type ---- */
+h1{font-family:Spectral,Georgia,serif;font-weight:700;font-size:clamp(30px,4.6vw,46px);
+  line-height:1.1;letter-spacing:-.015em;margin:0 0 14px;text-wrap:balance}
+h2{font-family:Spectral,Georgia,serif;font-weight:600;font-size:clamp(21px,2.6vw,28px);
+  line-height:1.2;letter-spacing:-.01em;margin:0 0 6px;text-wrap:balance}
+h3{font-family:"IBM Plex Sans",sans-serif;font-weight:600;font-size:16.5px;
+  margin:30px 0 8px;letter-spacing:-.005em}
+h4{font-size:14px;font-weight:600;margin:22px 0 6px}
+p{margin:0 0 14px}
+a{color:var(--accent)}
+code,.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.885em}
+code{background:var(--surface-2);padding:1px 5px;border-radius:3px;
+  border:1px solid var(--rule);white-space:nowrap}
+.num{font-variant-numeric:tabular-nums}
+strong{font-weight:600;color:var(--ink)}
+em.q{font-style:normal;color:var(--muted)}
+/* ---- section scaffolding ---- */
+section{scroll-margin-top:20px;padding-top:52px}
+.sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:20px;
+  border-bottom:1px solid var(--rule);padding-bottom:12px}
+.sec-no{font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;
+  color:var(--accent);letter-spacing:.1em;flex:none;padding-top:5px}
+.eyebrow{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.15em;
+  text-transform:uppercase;color:var(--faint);font-weight:600;margin:0 0 10px}
+.lede{font-size:17.5px;line-height:1.55;color:var(--ink-2)}
+/* ---- status chips ---- */
+.chip{display:inline-flex;align-items:center;gap:5px;font-family:"IBM Plex Mono",monospace;
+  font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+  padding:2.5px 8px;border-radius:3px;white-space:nowrap;vertical-align:middle}
+.c-ok{background:var(--ok-soft);color:var(--ok)}
+.c-warn{background:var(--warn-soft);color:var(--warn)}
+.c-crit{background:var(--crit-soft);color:var(--crit)}
+.c-new{background:var(--new-soft);color:var(--new)}
+.c-grey{background:var(--grey-soft);color:var(--grey)}
+/* ---- finding blocks: left stripe encodes verification status ---- */
+.find{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--rule-strong);
+  border-radius:0 5px 5px 0;padding:16px 20px;margin:0 0 14px;box-shadow:var(--shadow)}
+.find.ok{border-left-color:var(--ok)}
+.find.warn{border-left-color:var(--warn)}
+.find.crit{border-left-color:var(--crit)}
+.find.new{border-left-color:var(--new)}
+.find.grey{border-left-color:var(--grey)}
+.find h4{margin:0 0 6px;font-size:15px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.find p{margin:0 0 8px;font-size:14.5px;color:var(--ink-2)}
+.find p:last-child{margin-bottom:0}
+.find .ev{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--muted);
+  background:var(--surface-2);border-radius:4px;padding:8px 11px;margin-top:10px;
+  overflow-x:auto;white-space:pre;line-height:1.5}
+/* ---- tables ---- */
+.tw{overflow-x:auto;margin:0 0 18px;border:1px solid var(--rule);border-radius:6px;
+  background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th{text-align:left;font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--muted);font-weight:600;padding:10px 13px;
+  border-bottom:1px solid var(--rule-strong);background:var(--surface-2);white-space:nowrap}
+td{padding:9px 13px;border-bottom:1px solid var(--rule);vertical-align:top;color:var(--ink-2)}
+tr:last-child td{border-bottom:none}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;
+  font-family:"IBM Plex Mono",monospace;white-space:nowrap}
+td strong{color:var(--ink)}
+.t-tight td,.t-tight th{padding:7px 11px}
+/* ---- stat row ---- */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;
+  background:var(--rule);border:1px solid var(--rule);border-radius:6px;overflow:hidden;margin:0 0 20px}
+.stat{background:var(--surface);padding:14px 16px}
+.stat .k{font-family:"IBM Plex Mono",monospace;font-size:9.5px;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--faint);font-weight:600;margin-bottom:5px}
+.stat .v{font-family:Spectral,serif;font-size:25px;font-weight:600;line-height:1.05;
+  font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.stat .s{font-size:11.5px;color:var(--muted);margin-top:3px;line-height:1.35}
+.stat.hi .v{color:var(--crit)}
+.stat.go .v{color:var(--ok)}
+/* ---- callout ---- */
+.call{border:1px solid var(--rule);border-radius:6px;padding:18px 22px;margin:0 0 18px;
+  background:var(--surface)}
+.call.q{background:var(--accent-soft);border-color:transparent}
+.call.q h3{margin-top:0;color:var(--accent-ink);font-family:Spectral,serif;font-size:19px;
+  font-weight:600}
+.call.q p:last-child{margin-bottom:0}
+.call.danger{background:var(--crit-soft);border-color:transparent}
+.call.danger h3{margin-top:0;color:var(--crit)}
+/* ---- lists ---- */
+ul,ol{margin:0 0 14px;padding-left:20px}
+li{margin-bottom:5px}
+li::marker{color:var(--faint)}
+ul.tick{list-style:none;padding-left:0}
+ul.tick li{padding-left:20px;position:relative}
+ul.tick li:before{content:"›";position:absolute;left:4px;color:var(--accent);font-weight:600}
+/* ---- diagram ---- */
+figure{margin:0 0 20px;border:1px solid var(--rule);border-radius:6px;background:var(--surface);
+  padding:20px;overflow-x:auto}
+figcaption{font-size:12.5px;color:var(--muted);margin-top:12px;line-height:1.45}
+svg{display:block;max-width:100%;height:auto}
+/* ---- header ---- */
+header.top{border-bottom:2px solid var(--ink);padding-bottom:26px;margin-bottom:8px}
+.meta{display:flex;flex-wrap:wrap;gap:8px 22px;font-family:"IBM Plex Mono",monospace;
+  font-size:11px;color:var(--muted);margin-top:16px}
+.meta b{color:var(--ink);font-weight:600}
+hr.div{border:none;border-top:1px solid var(--rule);margin:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+<nav class="toc">
+  <h4>Answer</h4>
+  <a href="#q">The four questions</a>
+  <a href="#verdict">Verdict &amp; confidence</a>
+  <h4>Verification</h4>
+  <a href="#matrix">Verification matrix</a>
+  <a href="#newfind">New problems found</a>
+  <a href="#rejected">Rejected &amp; unreproduced</a>
+  <h4>Sage 300</h4>
+  <a href="#sage-arch">Architecture</a>
+  <a href="#modules">Module map</a>
+  <a href="#purchase">Purchase flow</a>
+  <a href="#billpost">Invoice → AP → GL</a>
+  <a href="#sales">Sales flow</a>
+  <h4>SMEAssist</h4>
+  <a href="#sme-arch">Architecture &amp; backend</a>
+  <a href="#sme-state">Target state</a>
+  <h4>Mapping</h4>
+  <a href="#items">Item master</a>
+  <a href="#masters">Master data reuse</a>
+  <a href="#map">Source → target</a>
+  <a href="#idmap">Source ID mapping</a>
+  <h4>Delivery</h4>
+  <a href="#scripts">Migration scripts</a>
+  <a href="#recon">Reconciliation</a>
+  <a href="#plan">Implementation plan</a>
+  <a href="#unknowns">Remaining unknowns</a>
+</nav>
+
+<main>
+<header class="top">
+  <p class="eyebrow">Independent verification · read-only</p>
+  <h1>Sage 300 → SMEAssist: what the evidence actually shows</h1>
+  <p class="lede measure">A statement-by-statement re-examination of the prior migration audit, re-derived
+  from the live Sage <code>IDEDAT</code> database, the live SMEAssist MySQL schema, and the
+  SMEAssist Java source. Nothing was modified: every statement issued was a
+  <code>SELECT</code>, <code>SHOW</code> or <code>DESCRIBE</code>.</p>
+  <div class="meta">
+    <span><b>Date</b> 8 Sep 2026</span>
+    <span><b>Sage</b> SQL Server 2025 · IDEDAT · 1,110 tables</span>
+    <span><b>Target</b> MySQL 8.0.46 · org wonderblues</span>
+    <span><b>Window</b> 1 Jan – 30 Apr 2026</span>
+    <span><b>Posture</b> read-only</span>
+  </div>
+</header>
+
+<section id="q">
+<div class="sec-head"><span class="sec-no">00</span><div>
+  <h2>The four questions</h2></div></div>
+
+<div class="call danger">
+  <h3>First, a correction about the brief</h3>
+  <p>The file this review was asked to verify —
+  <code>Sage300_to_SMEAssist_Historical_Context_for_Verification.md</code> —
+  <strong>does not exist</strong> anywhere on this machine, and no trace of it appears in git
+  history. Rather than invent its contents, this review verifies the artifact that genuinely
+  matches the description: the untracked <code>migration-analysis/</code> package
+  (25 documents, 12,426 lines, written 5–7 Sep 2026 by a prior session), whose
+  <code>FINAL-REPORT.md</code> is a Phase&nbsp;0 audit that ends by naming the eight of its own
+  claims most likely to be wrong. Those became this review's attack list.</p>
+</div>
+
+<div class="call q">
+<h3>What is the real problem we are trying to solve?</h3>
+<p><strong>It is a completeness and scope problem wearing the costume of a correctness problem.</strong>
+The transformation logic — Indian GST, reverse charge, rate snapping, receipt splits — is
+demonstrably sound: of 9,376 posted bills, 5,769 match Sage to the paise and only
+<strong>three</strong> non-reverse-charge documents differ by ≥ ₹1. That is not what a broken
+mapping looks like.</p>
+<p>What is actually unsolved is that <strong>the migration has moved one narrow slice of the
+business and nothing else.</strong> Purchase invoices are 34.2% across by count and 13.5% by
+value — but that single average hides the real shape: AP-direct expense bills are
+<strong>72.4%</strong> done while the goods/PO stream is at <strong>0.88%</strong>. And every
+other object is at exactly zero: no sales invoices, no purchase orders, no goods receipts,
+no deliveries, no payments, no receipts, no credit or debit notes, no opening balances, no
+chart of accounts, no journal vouchers. Sage's window holds roughly ₹386 crore of
+<em class="q">sales</em> that no part of this project touches.</p>
+<p>Layered on top are two live hazards: one armed data defect that will understate ₹38 crore
+the next time the pipeline runs, and one script that deletes every bill in the organisation
+while its docstring promises it cannot.</p>
+</div>
+
+<div class="call q">
+<h3>What did we previously think the problem was?</h3>
+<p>Two different prior framings, and they should not be conflated.</p>
+<p><strong>The brief's framing</strong> — implicit in the 20-phase instruction — treats the flow
+as unknown and undiscovered: that we must establish whether sales runs
+<code>OL → OE</code> or <code>MM → OE</code>, whether a shared item master is the right model,
+and follow Sage PDF documentation to learn the purchase process. All three premises turn out
+to be either already settled or factually wrong (see
+<a href="#rejected">§ Rejected</a>).</p>
+<p><strong>The prior audit's framing</strong> was much closer: <em class="q">"the transformation
+logic is good; its completeness, its scope governance and its safety rails are not."</em>
+That framing survives this review essentially intact.</p>
+</div>
+
+<div class="call q">
+<h3>What does the actual evidence show?</h3>
+<p><strong>The prior audit is unusually trustworthy and it reproduces exactly.</strong> Its
+population figures came back to the paise on independent re-derivation — AP-direct
+12,781 / ₹1,763,950,260.97 and PO 18,046 / ₹1,942,654,924.63, plus the 1,079
+no-distribution documents at ₹295,107,559.76. Its foundational assumption, which it
+explicitly asked to have checked first, is <strong>confirmed</strong>. Its most reassuring
+claim survived a hostile re-test.</p>
+<p><strong>But its single highest-priority remedy is wrong.</strong> The audit correctly
+identified that the goods path posts source-currency amounts as rupees, and correctly told
+you to switch to the <code>ap_amount_hc</code> column. That column is itself corrupted on at
+least 174 in-window documents, because the staging extract strips trailing punctuation from
+invoice numbers and then joins on the damaged key — pulling amounts from a
+<em class="q">different real invoice</em>, in one proven case from a different financial year.
+Applying the recommended fix as written would import wrong values.</p>
+<p><strong>And two of the brief's central questions dissolve on contact with the data.</strong>
+The <code>MM</code> module has 68 tables and <strong>two rows</strong>. The shared item-master
+question is architecturally correct but empirically almost irrelevant here: of 17,129
+purchased and 2,918 sold items, exactly <strong>26</strong> appear in both, because Indian
+Designs manufactures rather than trades.</p>
+</div>
+
+<div class="call q">
+<h3>What exactly should we implement?</h3>
+<p>In this order, and not in any other:</p>
+<ol>
+<li><strong>Disarm <code>work/cleanup_pilot.py</code> today.</strong> One careless invocation
+destroys 9,377 bills. Cost: minutes.</li>
+<li><strong>Do not run <code>goods-post</code> until the currency fix lands</strong> — and fix
+it by carrying real currency and conversion rate into the fields SMEAssist already has,
+<em class="q">not</em> by switching to <code>ap_amount_hc</code>.</li>
+<li><strong>Re-extract the staging mirror on the unstripped invoice number</strong>, then prove
+the repair by reconciling the mirror against live <code>APOBL</code> per document.</li>
+<li><strong>Move the crosswalk off one laptop into the database table that already exists for
+it</strong> and currently holds zero rows.</li>
+<li><strong>Give the reconciler an independent second source</strong> so it can no longer read
+the same wrong column on both sides.</li>
+<li><strong>Then, and only then, decide scope</strong> — whether sales, payments and opening
+balances are in or out. That is a business decision that has never been put to anyone.</li>
+</ol>
+</div>
+</section>
+
+<section id="verdict">
+<div class="sec-head"><span class="sec-no">01</span><div>
+  <h2>Verdict and confidence</h2></div></div>
+
+<div class="stats">
+  <div class="stat"><div class="k">Audit claims tested</div><div class="v">21</div>
+    <div class="s">against live systems</div></div>
+  <div class="stat go"><div class="k">Confirmed</div><div class="v">14</div>
+    <div class="s">several reproduced exactly</div></div>
+  <div class="stat"><div class="k">Corrected / refined</div><div class="v">4</div>
+    <div class="s">right defect, wrong remedy</div></div>
+  <div class="stat hi"><div class="k">New problems</div><div class="v">5</div>
+    <div class="s">not in the prior audit</div></div>
+  <div class="stat"><div class="k">Not reproduced</div><div class="v">3</div>
+    <div class="s">marked unverified, not refuted</div></div>
+</div>
+
+<p class="measure">The prior audit's numbers are honest. Where I could re-derive a figure
+independently, it came back identical — not approximately, but to the paise, repeatedly.
+That is rare and it earns the document a lot of credit. My corrections are concentrated in
+two places: the <em class="q">remedy</em> for the currency defect, and the framing of
+completeness. Its three HIGH-risk claims I could not reproduce are marked unverified rather
+than refuted, because failing to reproduce a finding is not the same as disproving it.</p>
+
+<div class="find crit">
+  <h4>The one thing that must not wait <span class="chip c-crit">act today</span></h4>
+  <p><code>work/cleanup_pilot.py</code> revokes and then <code>DELETE</code>s every live bill in
+  the organisation. It has no <code>--apply</code> flag, no dry-run and no confirmation. It was
+  written when the org held 8 pilot bills; it now holds 9,377. The prior audit flagged this.
+  What the audit did not notice is that <strong>the file's own docstring actively promises the
+  opposite</strong>:</p>
+  <div class="ev">"""Undo the pilot ... Every target is listed explicitly - nothing is matched
+by pattern - so this cannot reach past what it names."""
+
+bills = [r["id"] for r in m.mysql(
+    "SELECT id FROM bill WHERE organisationId=%s AND isDeleted+0=0" % m.ORG_ID, ["id"])]
+for bid in bills:
+    api.call("PUT", "/bill/updateStatus/%s/REVOKED?..." % bid)
+    api.call("DELETE", "/bill/%s" % bid)</div>
+  <p>Products and the contact <em class="q">are</em> listed explicitly. Bills are not — they are
+  matched by pattern, and the pattern is "everything". Anyone reading the docstring before
+  running it would be reassured by a false statement.</p>
+</div>
+</section>
+
+<section id="matrix">
+<div class="sec-head"><span class="sec-no">02</span><div>
+  <h2>Verification matrix</h2>
+  <p class="eyebrow" style="margin:6px 0 0">every load-bearing prior claim, statement by statement</p></div></div>
+
+<p class="measure">Ordered by how much rests on the claim, not by how likely it was to fail.
+The first two are the ones the prior audit itself nominated as most dangerous if wrong.</p>
+
+<div class="tw"><table>
+<thead><tr><th style="width:27%">Prior statement</th><th style="width:38%">Evidence I gathered</th>
+<th style="width:12%">Status</th><th style="width:23%">Correction</th></tr></thead>
+<tbody>
+
+<tr><td><strong>#1 <code>APOBL</code> is the posted open-payables ledger; <code>APIBH</code>/<code>APIBD</code>
+are the invoice batch (entry) side.</strong> <em class="q">"Everything else in this audit is
+built on that."</em></td>
+<td>Column census: <code>POSTSEQNCE</code>, <code>SWPAID</code>, <code>DATEPAID</code> exist
+<em class="q">only</em> on <code>APOBL</code>; <code>INVCSTTS</code>, <code>ERRBATCH</code>
+exist <em class="q">only</em> on <code>APIBH</code>. Of in-window batch documents,
+38 never reach <code>APOBL</code> — and <strong>all 38 carry a non-zero
+<code>ERRBATCH</code></strong>, i.e. they are error-batch entries that never posted.</td>
+<td><span class="chip c-ok">confirmed</span></td>
+<td>None. The direction of flow is proven, not assumed. The audit may rely on it.</td></tr>
+
+<tr><td><strong>#2 Of 9,371 documents compared, only 3 differ by ≥ ₹1.</strong>
+<em class="q">"If this claim is wrong, the reassuring half of this report collapses."</em></td>
+<td>Rebuilt the comparison independently from <code>bill.metadata</code>
+(<code>sageVendor</code>, <code>sageDoc</code>) against <code>APOBL</code>, consolidating
+<code>*N</code> receipt-split parts. 9,376 ACTIVE bills; <strong>zero failed to match</strong>
+(the join drops nothing). Non-RCM: 5,769 exact · 2,695 ≤ ₹0.01 (net −₹1.378) · 7 &lt; ₹1 ·
+<strong>3 ≥ ₹1</strong>. The two <code>FABI470</code> documents sum to
+<strong>−₹1,457,957.66</strong>, matching the stated figure exactly.</td>
+<td><span class="chip c-ok">confirmed</span></td>
+<td>Headline is <em class="q">conditional</em>: it holds only once reverse-charge documents are
+set aside. 901 RCM bills differ by ≥ ₹1 by design (+₹1,532,517.35). I also identified the
+unnamed third document: <code>JOBW258</code> doc <code>108</code>, off by exactly ₹1.00.</td></tr>
+
+<tr><td><strong>The goods path posts source-currency amounts as INR at rate 1.0; ₹48.03 Cr
+exposure.</strong></td>
+<td>Tested per-document, not per-currency. Of 1,998 in-window foreign-currency staging rows,
+<strong>zero</strong> have <code>doc_total = ap_amount_hc</code>, and
+<strong>1,979</strong> satisfy <code>doc_total × fx_rate = ap_amount_hc</code> within ₹1.
+USD sums: <code>doc_total</code> 2,688,752.54 vs <code>ap_amount_hc</code> 242,392,995.60 at
+fx ≈ 90.51.</td>
+<td><span class="chip c-ok">confirmed</span></td>
+<td>Strengthened — the audit proved this only in aggregate and flagged that an aggregate ratio
+could hide a mixed population. It does not. The defect is uniform.</td></tr>
+
+<tr><td><strong>Remedy: switch the goods path to <code>ap_amount_hc</code>, at header and line
+level.</strong> Listed as the #1 action "before the pipeline runs again".</td>
+<td><code>ap_amount_hc</code> is wrong on 307 in-window INR documents (net ₹2,194,191.34,
+worst single row ₹389,760). Root cause proven below: the mirror strips trailing punctuation
+from invoice numbers and joins AP on the damaged key.</td>
+<td><span class="chip c-crit">incorrect</span></td>
+<td><strong>Do not apply as written.</strong> Fix the extract key first, or carry currency +
+conversion rate into the fields SMEAssist already exposes.</td></tr>
+
+<tr><td><strong>Amounts are recalculated server-side and silently overwritten, never
+rejected</strong> — so Sage totals can only be <em class="q">reproduced</em>, not carried.</td>
+<td>Read the source. <code>BillServiceImpl.java:2013</code>
+<code>reCalculateAndValidateBillCreateDto</code>; at ~2195 the mismatch branch only warns to
+a Google Chat webhook and the log, then <code>setBillAmount(totalPrice)</code> executes
+<strong>outside the <code>if</code></strong>, unconditionally.</td>
+<td><span class="chip c-ok">confirmed</span></td>
+<td>None. This is the single most consequential architectural fact in the migration.</td></tr>
+
+<tr><td><strong>Completeness: 34.2% by count, 13.5% by value; goods stream at 0.87%.</strong></td>
+<td>Logical invoices in window = 12,781 AP + 14,628 PO (from 18,046 raw, after
+<code>*N</code> consolidation) = <strong>27,409</strong>, ₹370.66 Cr. Posted ACTIVE 9,376
+→ 34.2% / 13.5%. Split by source: AP-direct <strong>9,248 / 12,781 = 72.36%</strong>;
+goods <strong>128 / 14,628 = 0.88%</strong>.</td>
+<td><span class="chip c-ok">confirmed</span></td>
+<td>Reproduced to the decimal. But the blended average is the wrong way to state it — the two
+streams are in completely different conditions and should never be reported as one number.</td></tr>
+
+<tr><td><strong>The crosswalk is a 4.1 MB gitignored file on one laptop; the database table
+meant to hold it has zero rows.</strong></td>
+<td><code>idedat_staging.crosswalk</code> = <strong>0 rows</strong>;
+<code>idedat_staging.sku_ledger</code> = <strong>0 rows</strong>.
+<code>work/crosswalk_live.json</code> holds items 17,220 · contacts 455 · products 197 ·
+burned 75 · series 0.</td>
+<td><span class="chip c-ok">confirmed</span></td>
+<td>None. This remains the largest long-horizon risk in the project.</td></tr>
+
+<tr><td><strong><code>product.meta</code> is NULL on all products — provenance is dropped
+because <code>POST /product</code> discards the field the loader sends.</strong></td>
+<td><code>product.meta IS NOT NULL</code> on <strong>11 of 17,886</strong>. Placeholder HSN
+<code>9999</code> on <strong>1,419</strong> products, unflagged.</td>
+<td><span class="chip c-ok">confirmed</span></td>
+<td>Effectively confirmed (11 exceptions, 0.06%). Contrast with <code>bill.metadata</code>,
+which is populated on <strong>all 10,769</strong> bills — so bills have provenance and
+products do not.</td></tr>
+
+<tr><td><strong>Sage declares zero foreign keys.</strong></td>
+<td><code>SELECT COUNT(*) FROM sys.foreign_keys</code> → <strong>0</strong> across 1,110 tables.</td>
+<td><span class="chip c-ok">confirmed</span></td>
+<td>None. Every relationship in Sage is convention.</td></tr>
+
+<tr><td><strong>Opening balances, payments, credit/debit notes, prepayments, journal vouchers,
+chart of accounts and TDS have zero rows in the target.</strong></td>
+<td><code>invoice</code>, <code>invoiceLineItem</code>, <code>salesOrder</code>,
+<code>purchaseOrder</code>, <code>delivery</code>, <code>deliveryChallan</code>,
+<code>receipt</code>, <code>paymentRequest</code> — all <strong>0</strong> for the org.</td>
+<td><span class="chip c-ok">confirmed</span></td>
+<td>Broader than stated. It is not only the accounting objects — the entire procurement and
+sales document chain is absent. See <a href="#sales">§ Sales flow</a>.</td></tr>
+
+<tr><td><strong>304 live bills share 152 statutory document numbers.</strong></td>
+<td>Measured on ACTIVE, non-deleted bills: <strong>63 groups / 164 bills</strong>.</td>
+<td><span class="chip c-warn">partially confirmed</span></td>
+<td>The defect class is real; the magnitude measures lower than reported. Likely a different
+filter (the audit may have counted REVOKED rows). Report the current measured figure.</td></tr>
+
+<tr><td><strong>17,126 of 17,886 products have never appeared on a bill line.</strong></td>
+<td>36,459 bill lines reference only <strong>727 distinct products</strong>, and every one
+resolves to a real <code>product</code> row (zero orphan <code>productId</code>s). Live
+products 17,450 → <strong>16,723 unused (95.8%)</strong>.</td>
+<td><span class="chip c-ok">confirmed</span></td>
+<td>Correctly counted, but it is a <em class="q">symptom</em>, not a defect: <code>goods-masters</code>
+pre-created ~17k item products while <code>goods-post</code> never ran. It becomes a real
+problem only because those products carry placeholder HSNs and no provenance.</td></tr>
+
+<tr><td><strong>Reverse charge is identifiable only via accounts <code>1L8TX14/15/16</code>,
+with header tax zero.</strong></td>
+<td>Not independently re-derived from GL this pass. Strongly corroborated indirectly: the 901
+RCM-flagged bills each differ from Sage by exactly the GST uplift
+(e.g. <code>129,150 × 1.18 = 152,397</code>; <code>485,742.06 × 1.05 = 510,029.16</code>).</td>
+<td><span class="chip c-warn">partially confirmed</span></td>
+<td>The RCM <em class="q">population</em> behaves exactly as the claim predicts. The account-level
+mechanism itself remains taken on the audit's evidence.</td></tr>
+
+<tr><td><strong>132 products carry two live ledgers (Direct + Indirect); ₹8.72 Cr of expense
+sits under the wrong head.</strong> Ranked HIGH.</td>
+<td>Zero <code>financeAccount</code> names are shared by more than one live account. Zero
+names span both <code>Direct Expenses</code> and <code>Indirect Expenses</code>
+<code>accountingGroupName</code>. Live expense ledgers: Purchase Accounts 17,631 ·
+Direct 255 · Indirect 137.</td>
+<td><span class="chip c-grey">not reproduced</span></td>
+<td>Could not reproduce by ledger name or by accounting group. <strong>Not refuted</strong> —
+the audit may have joined products to ledgers through the crosswalk rather than by name.
+Needs the original query before it is either acted on or dismissed.</td></tr>
+
+</tbody></table></div>
+</section>
+
+<section id="newfind">
+<div class="sec-head"><span class="sec-no">03</span><div>
+  <h2>New problems this review found</h2>
+  <p class="eyebrow" style="margin:6px 0 0">not present in the prior audit</p></div></div>
+
+<div class="find crit">
+  <h4>N1 · The staging mirror corrupts AP amounts by stripping invoice-number punctuation
+  <span class="chip c-crit">critical</span> <span class="chip c-new">new</span></h4>
+  <p>Sage stores invoice numbers with trailing punctuation — <code>244/</code>,
+  <code>213,.</code>, <code>217..</code>, <code>218,,</code>, <code>250-</code>,
+  <code>E/16191.</code>. The MySQL staging mirror stores them <em class="q">stripped</em>, then
+  joins the AP obligation back on the stripped key. Where stripping makes two genuinely
+  different Sage documents collide, <code>ap_amount_hc</code> is populated from the wrong one.</p>
+  <p>The proof case is unambiguous. Vendor <code>ACCI277</code> has two distinct real
+  documents:</p>
+  <div class="ev">Sage APOBL:
+  [E/16191 ]  AMTINVCHC = 124,740.00   DATEINVC = 20250303   <- different FY
+  [E/16191.]  AMTINVCHC = 514,500.00   DATEINVC = 20260326   <- in window
+
+idedat_staging.sage_bill_hdr (invhseq 222493955):
+  inv_number_raw = [E/16191]  len 7   (the trailing '.' is gone)
+  doc_total      =  514,500.00   <- correct, the in-window document
+  ap_amount_hc   =  124,740.00   <- WRONG: pulled from the 2025 document</div>
+  <p><strong>Scale.</strong> Sage holds 187 in-window documents with trailing punctuation; the
+  mirror retains only 37, so ~150 were silently altered. 307 in-window INR documents have
+  <code>doc_total ≠ ap_amount_hc</code> (net ₹2,194,191.34); <strong>174 in-window documents
+  worth ₹21,459,080.41</strong> sit in vendor+invoice groups that collide once stripped.</p>
+  <p><strong>Why it matters more than its size.</strong> The prior audit's number-one
+  recommended action — <em class="q">"fix the goods currency column (<code>ap_amount_hc</code>,
+  at header <em>and</em> line level)"</em> — would import these wrong values as the fix. A
+  remedy that is applied first and trusted most is exactly where a latent corruption does the
+  most damage.</p>
+</div>
+
+<div class="find new">
+  <h4>N2 · This resolves the audit's one openly unresolved contradiction
+  <span class="chip c-new">new</span></h4>
+  <p>The audit recorded a conflict it could not settle: the extract comments claim
+  "154 whitespace documents", a flow analyst found 8 in-window, and it concluded
+  <em class="q">"Unresolved — trailing whitespace is undetectable in a <code>char</code>
+  column."</em></p>
+  <p>It was never whitespace. In the window, <strong>0</strong> documents carry trailing
+  whitespace and <strong>187</strong> carry trailing punctuation. The original observation was
+  real; its diagnosis was wrong, which is why nobody could reproduce it.</p>
+  <div class="ev">SELECT COUNT(*) total,
+ SUM(CASE WHEN RTRIM(IDINVC) LIKE '%[.,/-]' THEN 1 ELSE 0 END) trailing_punct,
+ SUM(CASE WHEN RTRIM(IDINVC) &lt;&gt; IDINVC   THEN 1 ELSE 0 END) trailing_space
+FROM APOBL WHERE DATEINVC BETWEEN 20260101 AND 20260430 AND IDTRXTYPE=12;
+
+ total  trailing_punct  trailing_space
+ 30827             187               0</div>
+</div>
+
+<div class="find warn">
+  <h4>N3 · SMEAssist supports foreign currency natively; the loader deliberately disables it
+  <span class="chip c-new">new</span></h4>
+  <p>The framing of the currency defect as "pick the right column" understates the options.
+  The <code>bill</code> table has <code>currency</code>, <code>conversionRate</code>,
+  <code>purchaseType</code>, <code>originCountry</code>, <code>incoTerms</code> and
+  <code>loadingPortCode</code>. The backend honours them —
+  <code>reCalculateAndValidateBillCreateDto</code> reads <code>getConversionRate()</code>
+  whenever <code>purchaseType == INTERNATIONAL</code>.</p>
+  <p>The loader <em class="q">does</em> set <code>purchaseType: INTERNATIONAL</code>
+  (<code>post_sage_bills.py:2674</code>) — and then hardcodes
+  <code>"conversionRate": 1.0, "currencyDto": {"currency": "INR"}</code> at line 2689, with a
+  comment explaining that naming the real currency "would contradict the bills we then post".
+  A bill is therefore declared international and simultaneously asserted to be in rupees at
+  parity. <strong>Zero of 10,769 bills carry a non-INR currency.</strong></p>
+  <p>This changes the recommended fix. Rather than substituting one rupee column for another
+  and discarding the foreign-currency fact, carry <code>currency</code> and
+  <code>fx_rate</code> — both already in <code>sage_bill_hdr</code> — into fields the target
+  already models. That preserves provenance and makes the arithmetic checkable from both sides.</p>
+</div>
+
+<div class="find warn">
+  <h4>N4 · The entire sales side is absent from the programme, and it is as large as the
+  purchase side <span class="chip c-new">new</span></h4>
+  <p>The audit listed missing objects as an accounting gap. Measured, it is bigger than that:
+  Sage's window holds <strong>7,051 sales invoices worth roughly ₹386 crore</strong>
+  (<code>AROBL</code> type 1: 6,850 from Order Entry + 201 AR-direct) against ₹370.66 crore of
+  purchases. The revenue half of the business has no migration path, no target rows, and no
+  mention in the runbook.</p>
+  <div class="ev">Sage AROBL, 1 Jan – 30 Apr 2026, by type and source
+  type 1 (invoice)  OE  6,850   3,581,225,967.17
+  type 1 (invoice)  AR    201     278,736,410.16
+  type 3 (credit)   OE    104     -56,421,448.06
+  type 3 (credit)   AR     61     -92,768,733.97
+
+SMEAssist target, same org
+  invoice 0 · invoiceLineItem 0 · salesOrder 0 · delivery 0 · receipt 0</div>
+</div>
+
+<div class="find grey">
+  <h4>N5 · 16,723 products were created for bills that never posted
+  <span class="chip c-new">new</span></h4>
+  <p>Referential integrity is clean — all 36,459 bill lines resolve to real products, zero
+  orphans. But those lines use only <strong>727 distinct products</strong> out of 17,450 live.
+  The other 95.8% were created by <code>goods-masters --all-items</code> in advance of a
+  <code>goods-post</code> phase that has since moved 128 documents.</p>
+  <p>Left alone this is inert. It stops being inert because 1,419 of them carry the
+  <code>9999</code> placeholder HSN and <strong>none carry provenance</strong>
+  (<code>product.meta</code> populated on 11 of 17,886), so there is no programmatic way to
+  tell a placeholder from a genuine classification later. Pre-creating masters ahead of the
+  transactions that justify them converts a recoverable gap into a permanent one.</p>
+</div>
+</section>
+
+<section id="rejected">
+<div class="sec-head"><span class="sec-no">04</span><div>
+  <h2>Rejected premises and unreproduced claims</h2></div></div>
+
+<h3>Premises in the brief that the evidence contradicts</h3>
+
+<div class="find crit">
+  <h4>The <code>MM</code> module is empty — it cannot be part of any flow
+  <span class="chip c-crit">false premise</span></h4>
+  <p>The brief asks whether sales runs <code>OL → OE</code>, <code>MM → OE</code>,
+  <code>OL → MM → OE</code>, or custom → <code>IE</code>. <code>MM</code> has 68 tables and
+  <strong>2 populated tables containing 2 rows in total</strong>. Every hypothesis routing
+  through <code>MM</code> is dead. <code>ZC</code> is likewise a single row.</p>
+</div>
+
+<div class="find crit">
+  <h4>There is no Sage documentation PDF, with or without hyperlinks
+  <span class="chip c-crit">false premise</span></h4>
+  <p>Phase 17 asks to find the PDFs used to understand the Sage purchase process and follow
+  their hyperlinks. 75 PDFs exist on this machine; they are MSME/Udyam registration
+  certificates plus one print of SMEAssist's own finance-account screen. That one file
+  contains <strong>zero <code>/URI</code> entries</strong> — no hyperlinks — and no Sage
+  content.</p>
+  <p>The useful correction, which the prior audit found and recorded against itself: <strong>Sage's
+  data dictionary is inside the database.</strong> <code>AUVIEW</code> maps table IDs to English
+  descriptions and <code>AUFLDS</code> holds 1,057 field descriptions. Documentation was never
+  missing; it was being looked for in the filesystem instead of the schema.</p>
+</div>
+
+<div class="find warn">
+  <h4>"If an item is purchased and sold, SMEAssist should have one shared Item master"
+  <span class="chip c-warn">true but near-irrelevant here</span></h4>
+  <p>Architecturally correct, and SMEAssist does exactly this. Empirically it governs
+  <strong>26 items</strong>. See <a href="#items">§ Item master</a> for the full working.</p>
+</div>
+
+<h3>Claims I could not reproduce</h3>
+<p class="measure">Recorded as unverified, not refuted. In each case the prior audit may have
+used a join I did not reconstruct, and the honest position is that I do not know.</p>
+<ul class="tick">
+<li><strong>132 products on two ledgers, ₹8.72 Cr misfiled.</strong> No duplicate ledger names;
+no name spanning Direct and Indirect groups. This was ranked HIGH and drives a proposed
+correcting journal — it should not be acted on until reproduced.</li>
+<li><strong>289 vendor contacts blocking 10,209 documents.</strong> Not re-derived this pass;
+the contact-hold state lives in <code>work/contacts_held.json</code> and the live crosswalk
+rather than in either database.</li>
+<li><strong>₹104.43 Cr excluded by <code>extract.sql</code>.</strong> The exclusion mechanism is
+visible in the SQL (<code>IDTRXTYPE = 12</code>, <code>EXISTS APIBD</code>, INR-only), and the
+1,079 / ₹295,107,559.76 no-distribution slice reproduces exactly — but I did not re-derive the
+full ₹104 Cr attribution across all four causes.</li>
+</ul>
+</section>
+
+<section id="sage-arch">
+<div class="sec-head"><span class="sec-no">05</span><div>
+  <h2>Sage 300 architecture</h2></div></div>
+
+<div class="stats">
+  <div class="stat"><div class="k">Engine</div><div class="v" style="font-size:19px">SQL Server 2025</div>
+    <div class="s">17.0.1000.7 · database IDEDAT</div></div>
+  <div class="stat"><div class="k">Tables</div><div class="v">1,110</div><div class="s">18 views · 6 procedures</div></div>
+  <div class="stat hi"><div class="k">Foreign keys</div><div class="v">0</div>
+    <div class="s">every join is convention</div></div>
+  <div class="stat"><div class="k">Item master</div><div class="v">1,196,108</div>
+    <div class="s">333,583 inactive</div></div>
+</div>
+
+<p class="measure">Conventions that must be known before reading any table.
+Dates are <code>YYYYMMDD</code> integers, not date types — so the window is
+<code>DATEINVC BETWEEN 20260101 AND 20260430</code>. The suffix <code>HC</code> means home
+currency (INR) and <code>TC</code> means the transaction's own currency; every amount exists
+in both. The fiscal year runs April–March and is labelled by its ending year, so this window
+straddles two: Jan–Mar is FY2025-26 and April is FY2026-27, which is why the loader keeps two
+counter series (<code>SAGE</code> and <code>SAGE27</code>).</p>
+
+<h3>The AP table families, and why the distinction is load-bearing</h3>
+<p class="measure">Getting these backwards would migrate the wrong population, so the
+separation is worth stating precisely. It is settled by which lifecycle columns each table
+carries — a test that does not depend on interpreting any name.</p>
+
+<div class="tw"><table class="t-tight">
+<thead><tr><th>Family</th><th>What it is</th><th>Business key</th><th>Columns unique to it</th><th class="n">Rows</th></tr></thead>
+<tbody>
+<tr><td><code>APIBH</code> / <code>APIBD</code></td><td>Invoice <strong>batch</strong> — the entry
+side, where documents are keyed before posting</td><td><code>(CNTBTCH, CNTITEM)</code></td>
+<td><code>INVCSTTS</code>, <code>ERRBATCH</code></td><td class="n">675,194 / 1,270,496</td></tr>
+<tr><td><code>APOBL</code></td><td>Posted <strong>open payables</strong> ledger — the obligation
+that actually exists</td><td><code>(IDVEND, IDINVC)</code></td>
+<td><code>POSTSEQNCE</code>, <code>SWPAID</code>, <code>DATEPAID</code></td><td class="n">787,465</td></tr>
+<tr><td><code>APOBLJ</code></td><td>Purge-proof payables journal</td><td><code>(IDVEND, IDINVC)</code></td>
+<td>—</td><td class="n">1,305,953</td></tr>
+</tbody></table></div>
+
+<div class="find warn">
+  <h4>A latent fragility in <code>extract.sql</code> <span class="chip c-warn">design risk</span></h4>
+  <p>The extract takes headers from <code>APOBL</code> (posted) and lines from
+  <code>APIBD</code> (batch), joined on <code>(CNTBTCH, CNTITEM)</code>. That works only
+  because this company has never purged posted AP batches. If it ever did,
+  <code>APOBL</code> would survive and <code>APIBD</code> would vanish — and the extract would
+  return <strong>zero lines for every bill, silently</strong>, since the join is an
+  <code>EXISTS</code> filter rather than an error. <code>APOBLJ</code> is the purge-proof
+  alternative. This is not a live bug; it is a tripwire under a future housekeeping action.</p>
+</div>
+
+<h3>Document types in <code>APOBL</code></h3>
+<p class="measure">Only <code>IDTRXTYPE = 12</code> is an invoice. The migration reads type 12
+and nothing else, which is correct — but it means five other populations exist and are
+untouched.</p>
+
+<div class="tw"><table class="t-tight">
+<thead><tr><th>Type</th><th>Meaning</th><th class="n">Docs (window)</th><th class="n">Value, home currency</th><th>Migrated</th></tr></thead>
+<tbody>
+<tr><td class="mono">12</td><td>Invoice</td><td class="n">30,827</td><td class="n">3,706,605,185.60</td><td><span class="chip c-warn">partly</span></td></tr>
+<tr><td class="mono">22</td><td>Debit note</td><td class="n">137</td><td class="n">67,596,606.48</td><td><span class="chip c-crit">no</span></td></tr>
+<tr><td class="mono">32</td><td>Credit note</td><td class="n">2,066</td><td class="n">−407,960,126.59</td><td><span class="chip c-crit">no</span></td></tr>
+<tr><td class="mono">50</td><td>Prepayment</td><td class="n">1,729</td><td class="n">−1,548,255,387.03</td><td><span class="chip c-crit">no</span></td></tr>
+<tr><td class="mono">51</td><td>Payment</td><td class="n">3,274</td><td class="n">−1,860,075,231.25</td><td><span class="chip c-crit">no</span></td></tr>
+</tbody></table></div>
+</section>
+
+<section id="modules">
+<div class="sec-head"><span class="sec-no">06</span><div>
+  <h2>Module map — what is real and what is scaffolding</h2></div></div>
+
+<p class="measure">Table counts are misleading in Sage: a module ships its full schema whether
+or not the customer uses it. Row counts, taken from <code>sys.partitions</code>, separate the
+live modules from the installed-but-empty ones. This single table answers the brief's
+custom-module question.</p>
+
+<div class="tw"><table class="t-tight">
+<thead><tr><th>Prefix</th><th>Module</th><th class="n">Tables</th><th class="n">Populated</th><th class="n">Rows</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td class="mono">GL</td><td>General Ledger</td><td class="n">60</td><td class="n">26</td><td class="n">124,871,712</td><td><span class="chip c-ok">core</span></td></tr>
+<tr><td class="mono">IC</td><td>Inventory Control</td><td class="n">154</td><td class="n">62</td><td class="n">88,830,416</td><td><span class="chip c-ok">core</span></td></tr>
+<tr><td class="mono">PO</td><td>Purchase Orders</td><td class="n">169</td><td class="n">80</td><td class="n">45,008,565</td><td><span class="chip c-ok">core</span></td></tr>
+<tr><td class="mono">AP</td><td>Accounts Payable</td><td class="n">84</td><td class="n">53</td><td class="n">19,369,806</td><td><span class="chip c-ok">core</span></td></tr>
+<tr><td class="mono">OE</td><td>Order Entry (sales)</td><td class="n">97</td><td class="n">37</td><td class="n">8,253,760</td><td><span class="chip c-ok">core</span></td></tr>
+<tr><td class="mono">IE</td><td><strong>Import / Export</strong> — packing lists, export invoices, shipping</td><td class="n">85</td><td class="n">80</td><td class="n">7,655,020</td><td><span class="chip c-new">custom, heavy</span></td></tr>
+<tr><td class="mono">AR</td><td>Accounts Receivable</td><td class="n">111</td><td class="n">54</td><td class="n">7,004,604</td><td><span class="chip c-ok">core</span></td></tr>
+<tr><td class="mono">OL</td><td><strong>Order &amp; costing</strong> — bill of quantity, cost sheets</td><td class="n">52</td><td class="n">49</td><td class="n">4,850,333</td><td><span class="chip c-new">custom, heavy</span></td></tr>
+<tr><td class="mono">DT</td><td>custom</td><td class="n">19</td><td class="n">18</td><td class="n">458,441</td><td><span class="chip c-grey">custom, minor</span></td></tr>
+<tr><td class="mono">XR</td><td>custom</td><td class="n">34</td><td class="n">13</td><td class="n">439,883</td><td><span class="chip c-grey">custom, minor</span></td></tr>
+<tr><td class="mono">RP</td><td>custom</td><td class="n">21</td><td class="n">12</td><td class="n">251,539</td><td><span class="chip c-grey">custom, minor</span></td></tr>
+<tr><td class="mono">JS</td><td>custom</td><td class="n">37</td><td class="n">18</td><td class="n">130,717</td><td><span class="chip c-grey">custom, minor</span></td></tr>
+<tr><td class="mono">MM</td><td>custom</td><td class="n">68</td><td class="n"><strong>2</strong></td><td class="n"><strong>2</strong></td><td><span class="chip c-crit">empty</span></td></tr>
+<tr><td class="mono">ZC</td><td>custom</td><td class="n">13</td><td class="n">1</td><td class="n">1</td><td><span class="chip c-crit">empty</span></td></tr>
+</tbody></table></div>
+
+<p class="measure">The two custom modules that carry real weight are <code>IE</code> and
+<code>OL</code>, and together they identify the business: <code>IEPKLSIZ</code> (1,636,011
+packing-list size rows), <code>IEEXPINV</code>, <code>IEEXPRQH/D</code> (export requisitions),
+<code>IESHPRGD</code> (shipping) on one side; <code>OLOLBOQD</code> (1,046,343
+bill-of-quantity rows), <code>OLCSTIND</code>/<code>OLCSTINH</code> (costing),
+<code>OLDTLORH/D</code> (order details) on the other. This is a garment exporter that costs
+orders against a bill of quantity and ships them against packing lists — neither of which has
+any counterpart in SMEAssist.</p>
+</section>
+
+<style>
+.d-box{fill:var(--surface-2);stroke:var(--rule-strong);stroke-width:1}
+.d-box-a{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.2}
+.d-box-w{fill:var(--warn-soft);stroke:var(--warn);stroke-width:1.2}
+.d-t{fill:var(--ink);font-family:"IBM Plex Sans",sans-serif;font-size:13px;font-weight:600}
+.d-s{fill:var(--muted);font-family:"IBM Plex Mono",monospace;font-size:10px}
+.d-n{fill:var(--crit);font-family:"IBM Plex Sans",sans-serif;font-size:11px;font-weight:600}
+.d-l{stroke:var(--rule-strong);fill:none;stroke-width:1.5}
+.d-l-d{stroke:var(--warn);fill:none;stroke-width:1.5;stroke-dasharray:4 3}
+.d-cap{fill:var(--faint);font-family:"IBM Plex Mono",monospace;font-size:9.5px;
+  letter-spacing:.1em;text-transform:uppercase;font-weight:600}
+</style>
+
+<section id="purchase">
+<div class="sec-head"><span class="sec-no">07</span><div>
+  <h2>The purchase flow, as the data actually runs it</h2></div></div>
+
+<p class="measure">Told without Sage jargon first: <strong>somebody asks for goods; a buyer
+turns that request into an order with a supplier; the goods arrive and are counted into the
+warehouse — and that is the moment stock and its value change; later the supplier's invoice
+arrives and is matched to what was received; that invoice becomes a debt owed; the debt is
+written into the accounting journals; and eventually it is paid.</strong> Two details in that
+sentence are the ones people get wrong: the request step is real and usually present, and
+stock moves when goods are <em class="q">received</em>, not when the invoice is booked.</p>
+
+<figure>
+<svg viewBox="0 0 950 340" role="img" aria-label="Sage 300 purchase-to-pay chain">
+  <text class="d-cap" x="4" y="12">Procurement</text>
+  <g>
+    <rect class="d-box" x="4" y="22" width="200" height="58" rx="4"/>
+    <text class="d-t" x="18" y="45">Requisition</text>
+    <text class="d-s" x="18" y="63">PORQNH1 / PORQNL</text>
+    <rect class="d-box" x="252" y="22" width="200" height="58" rx="4"/>
+    <text class="d-t" x="266" y="45">Purchase Order</text>
+    <text class="d-s" x="266" y="63">POPORH1 / POPORL</text>
+    <rect class="d-box-a" x="500" y="22" width="200" height="58" rx="4"/>
+    <text class="d-t" x="514" y="45">Receipt / GRN</text>
+    <text class="d-s" x="514" y="63">PORCPH1 / PORCPL</text>
+    <rect class="d-box" x="748" y="22" width="198" height="58" rx="4"/>
+    <text class="d-t" x="762" y="45">Purchase Invoice</text>
+    <text class="d-s" x="762" y="63">POINVH1 / POINVL</text>
+  </g>
+  <path class="d-l" d="M204 51 H248 M252 51 l-8 -4 v8 z"/>
+  <path class="d-l" d="M452 51 H496 M500 51 l-8 -4 v8 z"/>
+  <path class="d-l" d="M700 51 H744 M748 51 l-8 -4 v8 z"/>
+
+  <rect class="d-box-w" x="500" y="118" width="200" height="52" rx="4"/>
+  <text class="d-t" x="514" y="139">Inventory movement</text>
+  <text class="d-s" x="514" y="156">ICHIST · POSTEDTOIC = 1</text>
+  <path class="d-l-d" d="M600 80 V114 M600 118 l-4 -8 h8 z"/>
+  <text class="d-n" x="712" y="140">stock and value move HERE,</text>
+  <text class="d-n" x="712" y="155">not at the invoice</text>
+
+  <text class="d-cap" x="4" y="205">Accounting</text>
+  <g>
+    <rect class="d-box-a" x="748" y="215" width="198" height="58" rx="4"/>
+    <text class="d-t" x="762" y="238">AP obligation</text>
+    <text class="d-s" x="762" y="256">APIBH/D → APOBL</text>
+    <rect class="d-box" x="500" y="215" width="200" height="58" rx="4"/>
+    <text class="d-t" x="514" y="238">Journal</text>
+    <text class="d-s" x="514" y="256">APPJH / APPJD</text>
+    <rect class="d-box" x="252" y="215" width="200" height="58" rx="4"/>
+    <text class="d-t" x="266" y="238">Posted General Ledger</text>
+    <text class="d-s" x="266" y="256">GLPOST · Σ TRANSAMT = 0</text>
+    <rect class="d-box" x="4" y="215" width="200" height="58" rx="4"/>
+    <text class="d-t" x="18" y="238">Settlement</text>
+    <text class="d-s" x="18" y="256">APOBP</text>
+  </g>
+  <path class="d-l" d="M847 80 V211 M847 215 l-4 -8 h8 z"/>
+  <path class="d-l" d="M748 244 H704 M700 244 l8 -4 v8 z"/>
+  <path class="d-l" d="M500 244 H456 M452 244 l8 -4 v8 z"/>
+  <path class="d-l" d="M252 244 H208 M204 244 l8 -4 v8 z"/>
+
+  <text class="d-s" x="4" y="305">88% of purchase orders (8,549 of 9,690) begin as a requisition</text>
+  <text class="d-s" x="4" y="322">PO invoice → AP is resolved by DRILLDWNLK (100%), not by the natural key (17,915 of 18,047)</text>
+</svg>
+<figcaption>The purchase-to-pay chain in <code>IDEDAT</code>. Highlighted boxes are the two
+steps that most often get modelled wrongly: goods receipt (where inventory actually moves)
+and the AP obligation (which is a posted ledger, not the batch it came from).</figcaption>
+</figure>
+
+<h3>Where the two streams diverge, and a trap</h3>
+<p class="measure">Every AP obligation carries <code>SRCEAPPL</code>, which says whether it
+arrived from Purchase Orders or was keyed directly into Accounts Payable. This is the split
+that governs the whole migration, because the loader runs two entirely separate populations
+against it.</p>
+
+<div class="tw"><table class="t-tight">
+<thead><tr><th><code>SRCEAPPL</code></th><th>Meaning</th><th class="n">Raw docs</th><th class="n">Logical invoices</th><th class="n">Value</th><th class="n">Migrated</th></tr></thead>
+<tbody>
+<tr><td class="mono">AP</td><td>Keyed straight into payables — services, expenses, overheads</td>
+<td class="n">12,781</td><td class="n">12,781</td><td class="n">1,763,950,260.97</td><td class="n"><strong>72.36%</strong></td></tr>
+<tr><td class="mono">PO</td><td>Matched to a purchase order — goods</td>
+<td class="n">18,046</td><td class="n">14,628</td><td class="n">1,942,654,924.63</td><td class="n"><strong>0.88%</strong></td></tr>
+</tbody></table></div>
+
+<p class="measure"><strong>The trap:</strong> 427 AP-direct invoices carry a PO number in a
+field. That does not make them PO-matched — <code>SRCEAPPL</code> does. Selecting on the
+presence of a PO number instead would move 427 documents into the wrong stream, with the
+wrong classifier and the wrong ledger treatment.</p>
+
+<p class="measure"><strong>Receipt splits.</strong> 6,421 of the 18,046 PO headers carry a
+<code>*N</code> suffix — <code>DN-FD-082*1</code>, <code>*2</code> — because one supplier
+invoice was received in several deliveries. Consolidating them gives 14,628 logical vendor
+bills, of which 975 span 2 to 36 parts. <strong>The logical invoice is the bill</strong>, and
+the loader is right to consolidate. This also matters for reconciliation: comparing raw
+document counts across the two systems will never agree, and should not.</p>
+</section>
+
+<section id="sales">
+<div class="sec-head"><span class="sec-no">08</span><div>
+  <h2>Sales flow — and why the brief's question was the wrong one</h2></div></div>
+
+<p class="measure">The brief asks which of four routes the sales flow takes. Row counts settle
+it before any tracing is needed: <code>MM</code> is empty, so two of the four candidates
+cannot be true. What remains is a standard Order Entry spine with two custom modules attached
+at either end — <code>OL</code> in front of it for order costing, <code>IE</code> behind it
+for export documentation.</p>
+
+<figure>
+<svg viewBox="0 0 950 250" role="img" aria-label="Sage 300 sales and export chain">
+  <text class="d-cap" x="4" y="12">Order &amp; costing — custom OL</text>
+  <rect class="d-box-a" x="4" y="22" width="214" height="58" rx="4"/>
+  <text class="d-t" x="18" y="45">Order + bill of quantity</text>
+  <text class="d-s" x="18" y="63">OLDTLORH/D · OLOLBOQD · OLCSTIN*</text>
+
+  <text class="d-cap" x="256" y="12">Order Entry — standard OE</text>
+  <rect class="d-box" x="256" y="22" width="166" height="58" rx="4"/>
+  <text class="d-t" x="270" y="45">Sales order</text>
+  <text class="d-s" x="270" y="63">OEORDH / OEORDD</text>
+  <rect class="d-box" x="460" y="22" width="166" height="58" rx="4"/>
+  <text class="d-t" x="474" y="45">Shipment</text>
+  <text class="d-s" x="474" y="63">OESHIH / OESHID</text>
+  <rect class="d-box" x="664" y="22" width="166" height="58" rx="4"/>
+  <text class="d-t" x="678" y="45">Sales invoice</text>
+  <text class="d-s" x="678" y="63">OEINVH / OEINVD</text>
+
+  <path class="d-l" d="M218 51 H252 M256 51 l-8 -4 v8 z"/>
+  <path class="d-l" d="M422 51 H456 M460 51 l-8 -4 v8 z"/>
+  <path class="d-l" d="M626 51 H660 M664 51 l-8 -4 v8 z"/>
+
+  <text class="d-cap" x="4" y="128">Export documentation — custom IE</text>
+  <rect class="d-box-a" x="4" y="138" width="422" height="52" rx="4"/>
+  <text class="d-t" x="18" y="159">Packing lists · export invoice · shipping</text>
+  <text class="d-s" x="18" y="177">IEPKLSIZ 1,636,011 · IEEXPINV · IEEXPRQH/D · IESHPRGD</text>
+
+  <rect class="d-box" x="664" y="138" width="166" height="52" rx="4"/>
+  <text class="d-t" x="678" y="159">AR obligation</text>
+  <text class="d-s" x="678" y="177">AROBL · SRCEAPPL = OE</text>
+  <path class="d-l" d="M747 80 V134 M747 138 l-4 -8 h8 z"/>
+  <path class="d-l-d" d="M543 80 V150 H430 M426 150 l8 -4 v8 z"/>
+
+  <text class="d-s" x="4" y="222">6,850 OE sales invoices + 201 AR-direct in window ≈ ₹386 crore · 431 customers</text>
+  <text class="d-n" x="4" y="240">Migrated to SMEAssist: 0 invoices, 0 sales orders, 0 deliveries, 0 receipts</text>
+</svg>
+<figcaption>The sales chain. <code>MM</code> appears nowhere because it holds two rows.
+<code>IE</code> hangs off shipment rather than sitting in the financial spine — it produces
+the export paperwork, while the money still flows <code>OE → AROBL</code>.</figcaption>
+</figure>
+
+<div class="find crit">
+  <h4>The revenue half of the business has no migration path at all
+  <span class="chip c-crit">scope gap</span></h4>
+  <p>₹386 crore of sales in the same four-month window as the ₹371 crore of purchases the
+  project has been working on. There is no extract, no loader phase, no target row and no
+  mention in the runbook. Whether that is a deliberate scope boundary or an omission is not
+  recorded anywhere I can find — and that ambiguity is itself the finding.</p>
+</div>
+
+<h3>What I did not verify on this side</h3>
+<p class="measure">I established the shape of the sales chain and its size. I did
+<strong>not</strong> trace an individual sales invoice through shipment to inventory, COGS and
+the general ledger, and I did not establish how <code>OL</code> order IDs join to
+<code>OE</code> documents. Since nothing on this side is being migrated, that tracing has no
+current consumer — but it must be done before any sales scope is committed to, and it should
+not be assumed to mirror the purchase side.</p>
+</section>
+
+<section id="sme-arch">
+<div class="sec-head"><span class="sec-no">09</span><div>
+  <h2>SMEAssist architecture and backend behaviour</h2></div></div>
+
+<p class="measure">MySQL 8.0.46, 285 tables in <code>smeassist</code>, of which about 39 are in
+use for this organisation. Tenancy is cross-schema: <code>organisation</code> and
+<code>employee</code> live in a separate <code>yoda</code> schema. As in Sage, referential
+integrity is essentially unenforced — 23 declared foreign keys across 285 tables, and none on
+<code>bill</code>, <code>product</code>, <code>contact</code>, <code>voucherEntry</code> or
+<code>financeAccount</code>. Integrity here is a property of the loader, and measured, the
+loader achieves it: zero orphan <code>productId</code>s across 36,459 bill lines.</p>
+
+<div class="find crit">
+  <h4>The governing constraint: amounts cannot be carried, only reproduced
+  <span class="chip c-ok">confirmed in source</span></h4>
+  <p>Every migration design decision follows from this one method. The server recomputes the
+  bill total from the lines, compares it to what the client sent, and on mismatch
+  <em class="q">warns and proceeds</em>:</p>
+  <div class="ev">// BillServiceImpl.java  ~2186
+if (!BigDecimalUtils.isEqualR(totalPrice, billCreateDto.getBillAmount())) {
+    String totalPriceWarningMessage = String.format(
+        "Mismatch detected total price: ... | Given: %s | Calculated: %s",
+        billCreateDto.getBillAmount(), totalPrice);
+    googleChatService.sendErrorMessageOnGoogleChat(totalPriceWarningMessage, ...);
+    logger.warn(BILL_MARKER, totalPriceWarningMessage);
+}
+billCreateDto.setBillAmount(totalPrice);      // &lt;-- outside the if. unconditional.</div>
+  <p>The caller receives <code>200 OK</code> carrying a number it did not send. So Sage's
+  stated total can never be transferred as a value — it can only be
+  <em class="q">reconstructed</em>, by choosing per-line quantity, unit price and tax rate such
+  that the server's own arithmetic lands on Sage's figure. The loader's author understood this
+  (<code>post_sage_bills.py:1463-1474</code>), and it is why the migration is so much harder
+  than a data copy.</p>
+  <p><strong>Second-order consequence, and the reason reconciliation is mandatory rather than
+  optional:</strong> a bill can post successfully, return 200, and hold a different amount from
+  the one intended, with the only trace being a log line and a chat webhook. Presence in the
+  target proves nothing about correctness.</p>
+</div>
+
+<div class="find warn">
+  <h4>Provenance is asymmetric: bills keep it, products lose it</h4>
+  <p>No create DTO exposes <code>id</code>, and there is no first-class external-reference
+  column on any entity. Provenance therefore survives only where a JSON blob happens to be
+  persisted — and that differs by entity:</p>
+  <div class="ev">bill.metadata     NOT NULL on 10,769 / 10,769   {"sageDoc","sageVendor",
+                                               "sageBatch","sageItem","sageRcm",
+                                               "sageTaxGroup","migrationSource"}
+product.meta      NOT NULL on      11 / 17,886</div>
+  <p>That asymmetry is what makes an independent bill-level reconciliation possible at all —
+  and it is exactly what makes the 1,419 placeholder-HSN products unidentifiable after the
+  fact. <code>bill.metadata</code> is doing the work a proper source-reference column should
+  do, and it is doing it unindexed and unvalidated.</p>
+</div>
+
+<h3>Other verified backend behaviours</h3>
+<ul class="tick">
+<li><strong>Foreign currency is supported and unused.</strong> <code>bill.currency</code>,
+<code>conversionRate</code>, <code>purchaseType</code>, <code>originCountry</code>,
+<code>incoTerms</code>, <code>loadingPortCode</code> all exist, and the recalculation path
+honours <code>conversionRate</code> when <code>purchaseType == INTERNATIONAL</code>. Zero of
+10,769 bills carry a non-INR currency.</li>
+<li><strong>GST is decided by billing-address state, not by the GSTIN.</strong> The tax split
+reads a pincode-derived address, so a wrong pincode books the wrong tax head.</li>
+<li><strong><code>@NotNull</code> is decorative</strong> — no <code>@Valid</code> on the bill or
+contact controllers, so required-field enforcement is whatever <code>if</code> statement
+happens to exist in the service.</li>
+</ul>
+</section>
+
+<section id="items">
+<div class="sec-head"><span class="sec-no">10</span><div>
+  <h2>The item master question, answered</h2></div></div>
+
+<p class="measure">The brief states the hypothesis carefully and asks for it to be proven
+rather than assumed: <em class="q">if an item is purchased and sold, SMEAssist should normally
+have one shared Item master.</em> The architectural half is correct. The empirical half turns
+out to barely apply to this company.</p>
+
+<div class="stats">
+  <div class="stat"><div class="k">ICITEM master</div><div class="v">1,196,108</div><div class="s">333,583 inactive</div></div>
+  <div class="stat"><div class="k">Purchased in window</div><div class="v">17,129</div><div class="s">distinct items on PO invoice lines</div></div>
+  <div class="stat"><div class="k">Sold in window</div><div class="v">2,918</div><div class="s">distinct items on OE invoice lines</div></div>
+  <div class="stat hi"><div class="k">In both</div><div class="v">26</div><div class="s">0.15% of purchased</div></div>
+</div>
+
+<p class="measure">The reason is structural, not accidental. Indian Designs
+<strong>manufactures</strong>. It buys fabric, thread, buttons, interlining, labels and
+packing; it sells finished garments. The two populations are different categories of thing
+and were never going to overlap.</p>
+
+<div class="tw"><table class="t-tight">
+<thead><tr><th>What is sold</th><th>Sage category</th><th class="n">Items</th><th class="n">Share</th></tr></thead>
+<tbody>
+<tr><td>IKEA programme goods</td><td class="mono">7IKEA</td><td class="n">2,042</td><td class="n">70.0%</td></tr>
+<tr><td>Finished goods</td><td class="mono">6FGOOD</td><td class="n">510</td><td class="n">17.5%</td></tr>
+<tr><td>Domestic sales</td><td class="mono">7DOMES</td><td class="n">183</td><td class="n">6.3%</td></tr>
+<tr><td colspan="2"><em class="q">— subtotal, finished output</em></td><td class="n"><strong>2,735</strong></td><td class="n"><strong>93.7%</strong></td></tr>
+<tr><td>Packing, thread, buttons, trims recharged to the buyer</td>
+<td class="mono">4PACK · 4THRED · 4BUTON · 4FASHL …</td><td class="n">183</td><td class="n">6.3%</td></tr>
+</tbody></table></div>
+
+<p class="measure">And the 26 dual-use items are not counter-examples — they are the mechanism
+that explains the overlap. Every one is a raw material <strong>recharged to the customer</strong>:
+buyer-nominated shell fabric, price tickets, barcode stickers, poly bags, a button.</p>
+
+<div class="ev">ID41211X-TG03      4PACK    PRICE TICKET
+ID40743X-ST03      4PACK    BARCODE STICKER
+ID40743X-PB02      4POLYB   25.5"L X 17"W
+ID40556X-BT02-017  4BUTON   USSHT3364 75893/22 NATURAL 14L
+IDCOL01X-SHL0      4FASHL   SHELL FABRIC - PDM# 082883 - RED JASPER
+SAMFF47A-SHL1      4FASHL   100%COTTON CHECK 3 2/40x2/40x64x56 - 50mtrs</div>
+
+<h3>The eight questions, answered directly</h3>
+<div class="tw"><table class="t-tight">
+<thead><tr><th style="width:44%">Question</th><th>Answer from the data</th></tr></thead>
+<tbody>
+<tr><td>Does the same <code>ITEMNO</code> appear in both purchasing and sales?</td>
+<td><strong>Rarely.</strong> 26 of 17,129 purchased items, 26 of 2,918 sold.</td></tr>
+<tr><td>Are there cases where purchase and sales use different identifiers?</td>
+<td><strong>Yes, systematically</strong> — they are different categories of item, not different
+codes for the same item. This is a make-to-order manufacturer, not a reseller.</td></tr>
+<tr><td>Does Sage maintain one item master?</td>
+<td><strong>Yes.</strong> One <code>ICITEM</code> table, 1,196,108 rows, spanning raw material,
+work in progress, finished goods and scrap. One master, disjoint populations within it.</td></tr>
+<tr><td>Does SMEAssist have one shared Item master?</td>
+<td><strong>Yes.</strong> One <code>product</code> table, no purchase/sale distinction anywhere
+in its schema.</td></tr>
+<tr><td>Should we reuse one SMEAssist item?</td>
+<td><strong>Yes</strong> — and for the 26 it is the only correct answer. But this decision
+governs 26 records, not the migration.</td></tr>
+<tr><td>Which attributes are master-level?</td>
+<td><code>skuCode</code>, <code>productName</code>, <code>description</code>,
+<code>hsnCode</code>, <code>unitOfMeasurement</code>, <code>categoryId</code>,
+<code>typeOfStock</code>. Note <code>product</code> holds a <em class="q">single</em>
+<code>unitPrice</code>, <code>hsnCode</code> and <code>gstPercentage</code>.</td></tr>
+<tr><td>Which attributes are transaction-specific?</td>
+<td>Quantity, unit price, tax rate, discount and ledger — all on <code>billLineItem</code>.
+This is what makes the desired model work: because price lives on the line, one product can
+carry a supplier price in one context and a customer price in another <em class="q">without
+duplicating the master</em>.</td></tr>
+<tr><td>Which relationships map separately?</td>
+<td>Item→supplier and item→customer pricing, tax and account context. None of these has a
+master-level home in SMEAssist; all must be carried per transaction.</td></tr>
+</tbody></table></div>
+
+<div class="find warn">
+  <h4>The real item-master risk is elsewhere <span class="chip c-warn">reframe</span></h4>
+  <p>The duplicate-item worry the brief raises is not this project's item problem. The actual
+  ones are: (1) <strong>1,419 products carry the <code>9999</code> placeholder HSN</strong> and
+  cannot be distinguished from genuine classifications because <code>product.meta</code> is
+  empty; (2) <strong>16,723 products exist for bills that never posted</strong>; and (3) Sage's
+  work-in-progress categories — <code>5WPSEW</code> (58,724 items) and <code>5WPCUT</code>
+  (47,930) — represent manufacturing stages with <strong>no SMEAssist equivalent at all</strong>,
+  which is a modelling gap rather than a mapping one.</p>
+</div>
+</section>
+
+<section id="billpost">
+<div class="sec-head"><span class="sec-no">11</span><div>
+  <h2>Purchase invoice posting — the actual accounting entry</h2></div></div>
+
+<p class="measure">The brief asks not to assume <em class="q">Dr Purchase / Cr Vendor</em> but to
+prove the accounts from data. Here is a real posted document, traced end to end. It is the
+largest non-reverse-charge bill in the organisation: Sage
+<code>IDGR007 / IDEPHINJW2526-10</code>, an intercompany job-work invoice.</p>
+
+<div class="tw"><table class="t-tight">
+<thead><tr><th>Side</th><th class="n">Amount</th><th>Accounting group</th><th>Ledger</th><th>Granularity</th></tr></thead>
+<tbody>
+<tr><td><strong>Dr</strong></td><td class="n">63,457,744.00</td><td>Direct Expenses</td>
+<td class="mono">Job Work - Intercompany - Hindupur Unit 9_SAGE-4E2ME09</td>
+<td>one ledger <strong>per Sage GL account</strong></td></tr>
+<tr><td><strong>Dr</strong></td><td class="n">3,172,887.20</td><td>GST Input</td>
+<td class="mono">IGST Input @ 5.00 %</td>
+<td>one ledger <strong>per tax rate</strong></td></tr>
+<tr><td><strong>Dr</strong></td><td class="n">−0.20</td><td>Direct Expenses</td>
+<td class="mono">Round Off Value on Purchases_SAGE-4E1M016</td>
+<td>dedicated rounding ledger</td></tr>
+<tr><td><strong>Cr</strong></td><td class="n">66,630,631.00</td><td>Gst_37AAACN7429H1ZB_…</td>
+<td class="mono">INDIAN DESIGNS EXPORT PVT LTD - 9</td>
+<td>one leaf ledger <strong>per party</strong></td></tr>
+</tbody></table></div>
+
+<p class="measure"><code>63,457,744.00 + 3,172,887.20 − 0.20 = 66,630,631.00</code>. The entry
+balances to the paise, and so does the organisation as a whole:</p>
+
+<div class="ev">SELECT transactionType, COUNT(*) legs, ROUND(SUM(amount),2) total
+FROM voucherEntry WHERE organisationId=... AND isDeleted=0 GROUP BY transactionType;
+
+ DEBIT    41,583 legs   498,772,451.61
+ CREDIT   11,164 legs   498,772,451.61      <- equal to the paise</div>
+
+<p class="measure">So the answer to <em class="q">"what is the accounting entry"</em> is
+<strong>Dr expense (per Sage GL account) + Dr input GST (per rate) + Dr/Cr rounding,
+Cr the vendor's own party ledger</strong> — not a payables control account, and not a single
+purchases account.</p>
+
+<h3>Where the Sage model and the SMEAssist model genuinely do not correspond</h3>
+<p class="measure">These are structural, not bugs. Each one means some analysis that works in
+Sage cannot be reproduced in SMEAssist without extra work.</p>
+
+<div class="tw"><table class="t-tight">
+<thead><tr><th style="width:31%">Sage</th><th style="width:31%">SMEAssist</th><th>Consequence</th></tr></thead>
+<tbody>
+<tr><td>252 payables control accounts, grouped by category</td><td>one leaf ledger per party</td>
+<td>Sage's payables analysis by category cannot be reproduced; per-party analysis becomes
+possible instead</td></tr>
+<tr><td>one input-tax account per tax <strong>type</strong></td><td>one ledger per tax
+<strong>rate</strong></td><td>many-to-many: one Sage account maps to N ledgers, so tax
+reconciliation must aggregate before comparing</td></tr>
+<tr><td>reverse charge excludes the tax from the vendor payable</td>
+<td><code>billAmount</code> <strong>includes</strong> self-assessed tax</td>
+<td><code>billAmount</code> is not the payable on 901 bills (+₹1,532,517.35). Confirmed
+independently in <a href="#matrix">§ 02</a></td></tr>
+<tr><td>fiscal period stamped on every document</td><td>no fiscal-period field</td>
+<td>period-close cannot be reproduced; matters because the window straddles two fiscal years</td></tr>
+<tr><td>one sub-ledger per vendor code</td><td>7 contacts absorb 2–14 Sage vendor codes</td>
+<td>per-vendor balances unrecoverable for those; a deliberate merge on shared GSTIN</td></tr>
+<tr><td>TDS/TCS withheld at source</td><td><code>txsType</code>/<code>txsAmount</code> NULL on
+every bill</td><td>payables are gross of TDS</td></tr>
+<tr><td>no cost-centre concept needed — units are separate accounts</td>
+<td>no cost-centre dimension at all</td>
+<td>unit-wise P&amp;L only possible by splitting ledgers per unit, as the example above does
+("Hindupur Unit 9")</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="sme-state">
+<div class="sec-head"><span class="sec-no">12</span><div>
+  <h2>Target state as measured today</h2></div></div>
+
+<div class="tw"><table class="t-tight">
+<thead><tr><th>Object</th><th class="n">Rows</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Bills — all</td><td class="n">10,769</td><td>₹536,926,268.23 gross of revocations</td></tr>
+<tr><td>Bills — ACTIVE</td><td class="n">9,376</td><td><strong>₹498,776,137.99</strong> · the live migration</td></tr>
+<tr><td>Bills — REVOKED</td><td class="n">1,393</td><td>1,392 soft-deleted + 1 revoked but not deleted</td></tr>
+<tr><td>Bill line items</td><td class="n">36,459</td><td>referencing only 727 distinct products</td></tr>
+<tr><td>Products</td><td class="n">17,886</td><td>17,450 live · 16,723 never used · 1,419 placeholder HSN</td></tr>
+<tr><td>Contacts</td><td class="n">537</td><td>all vendors; no customers exist</td></tr>
+<tr><td>Finance accounts</td><td class="n">19,560 live</td><td>18,047 expense · 1,017 liability · 421 income · 60 asset</td></tr>
+<tr><td>Voucher legs</td><td class="n">52,747 live</td><td>Dr = Cr = ₹498,772,451.61</td></tr>
+<tr><td>Invoices · sales orders · purchase orders · deliveries · receipts · payments</td>
+<td class="n"><strong>0</strong></td><td>every one of them</td></tr>
+</tbody></table></div>
+
+<p class="measure">A note on the ₹3,686.38 between the bill total (₹498,776,137.99) and the
+voucher total (₹498,772,451.61): the prior audit attributed this to <strong>two ACTIVE bills
+that carry no accounting entry at all</strong>, arriving through a <code>preexisting</code>
+code path that no report watches, and firing on every interrupted run. The gap reproduces, so
+the explanation is consistent with the arithmetic, though I did not isolate the two bills
+myself.</p>
+</section>
+
+<section id="masters">
+<div class="sec-head"><span class="sec-no">13</span><div>
+  <h2>Master data — reuse or create</h2></div></div>
+
+<p class="measure">The rule the loader follows, and the right one: <strong>never match on name
+where a stronger identity exists.</strong> Names in this data are not unique, not stable and
+not clean.</p>
+
+<div class="tw"><table>
+<thead><tr><th>Master</th><th>Sage key</th><th>Matching identity</th><th>Decision</th><th>Duplicate prevention</th></tr></thead>
+<tbody>
+<tr><td><strong>Vendor / Supplier</strong></td><td><code>APVEN.VENDORID</code></td>
+<td><strong>GSTIN in <code>APVEN.BRN</code></strong> — not <code>TAXNBR</code> or
+<code>IDTAXREGI1</code>, which are empty on all 4,752 vendors</td>
+<td><span class="chip c-ok">reuse on GSTIN</span></td>
+<td>Backend rejects a duplicate registration number; loader then searches and adopts the
+existing contact. Consequence: 7 contacts legitimately absorb 2–14 Sage vendor codes</td></tr>
+<tr><td><strong>Item / Product</strong></td><td><code>ICITEM.FMTITEMNO</code></td>
+<td>SKU string <code>SAGE-&lt;item&gt;</code>; no external-reference column exists</td>
+<td><span class="chip c-warn">create, keyed by SKU</span></td>
+<td>Crosswalk file only. <code>product.meta</code> is empty, so nothing in the database records
+where a product came from</td></tr>
+<tr><td><strong>Chart of accounts</strong></td><td><code>GLAMF.ACCTID</code></td>
+<td>Finance-account <em class="q">display name</em> carrying <code>_SAGE-&lt;acct&gt;</code></td>
+<td><span class="chip c-warn">create per account</span></td>
+<td>Unindexed, non-unique and user-renameable — the weakest identity in the whole design</td></tr>
+<tr><td><strong>Tax</strong></td><td>tax authority + rate</td><td>ledger per <em class="q">rate</em>,
+e.g. <code>IGST Input @ 5.00 %</code></td><td><span class="chip c-warn">create per rate</span></td>
+<td>None server-side — an unvalidated rate silently auto-creates a ledger</td></tr>
+<tr><td><strong>Customer</strong></td><td><code>ARCUS</code> (431 rows)</td><td>—</td>
+<td><span class="chip c-crit">not implemented</span></td><td>n/a — no customers exist in the target</td></tr>
+<tr><td><strong>UOM</strong></td><td><code>ICITEM</code> stock unit</td>
+<td>mapped through a lookup with an <code>OTH</code> fallback</td>
+<td><span class="chip c-warn">transform</span></td>
+<td>Unmapped units are counted and silently bucketed to <code>OTH</code></td></tr>
+<tr><td><strong>Currency</strong></td><td><code>APOBL.CODECURN</code> + <code>fx_rate</code></td>
+<td>—</td><td><span class="chip c-crit">discarded</span></td>
+<td>Everything forced to INR at 1.0 — see <a href="#newfind">N3</a></td></tr>
+<tr><td><strong>Warehouse / location</strong></td><td><code>ICLOC</code></td><td>—</td>
+<td><span class="chip c-crit">no equivalent</span></td><td>No inventory is migrated at all</td></tr>
+<tr><td><strong>Bank details</strong></td><td>—</td><td>—</td>
+<td><span class="chip c-crit">absent in source</span></td>
+<td>Proven absent from Sage by value-shape scan; blocks any payment flow</td></tr>
+<tr><td><strong>CIN / LLPIN</strong></td><td>—</td><td>—</td>
+<td><span class="chip c-crit">absent in source</span></td>
+<td>Genuinely not in Sage. Must come from outside; blocks ~157 vendor contacts</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="map">
+<div class="sec-head"><span class="sec-no">14</span><div>
+  <h2>Source → target mapping</h2></div></div>
+
+<div class="tw"><table>
+<thead><tr><th>Business concept</th><th>Sage table</th><th>Sage key</th><th>SMEAssist concept</th>
+<th>Target</th><th>Type</th><th>Validation</th></tr></thead>
+<tbody>
+<tr><td>Supplier master</td><td><code>APVEN</code></td><td><code>VENDORID</code></td>
+<td>Contact (vendor)</td><td><code>contact</code> · <code>POST /contact/</code></td>
+<td><span class="chip c-ok">N:1 reuse</span></td><td>GSTIN echo-back</td></tr>
+<tr><td>Posted payable — the vendor bill</td><td><code>APOBL</code> <span class="chip c-grey">type 12</span></td>
+<td><code>(IDVEND, IDINVC)</code></td><td>Bill</td><td><code>bill</code> · <code>POST /bill/</code></td>
+<td><span class="chip c-warn">N:1 transform</span></td><td>value re-read after post</td></tr>
+<tr><td>Expense distribution</td><td><code>APIBD</code></td><td><code>(CNTBTCH, CNTITEM)</code></td>
+<td>Bill line item</td><td><code>billLineItem</code></td>
+<td><span class="chip c-ok">1:N</span></td><td>line sum vs header</td></tr>
+<tr><td>GL account master</td><td><code>GLAMF</code></td><td><code>ACCTID</code></td>
+<td>Finance Account (ledger)</td><td><code>financeAccount</code></td>
+<td><span class="chip c-warn">1:1 by name</span></td><td>none — weak identity</td></tr>
+<tr><td>Item master</td><td><code>ICITEM</code></td><td><code>FMTITEMNO</code></td>
+<td>Product</td><td><code>product</code></td>
+<td><span class="chip c-ok">1:1</span></td><td>SKU lookup</td></tr>
+<tr><td>Input tax</td><td>tax authority + rate</td><td>—</td><td>GST-input ledger</td>
+<td><code>financeAccount</code></td><td><span class="chip c-warn">N:N derived</span></td>
+<td>rate snapping ≤ 0.10 pp</td></tr>
+<tr><td>Accounting effect</td><td><code>APPJH/D</code> → <code>GLPOST</code></td><td><code>POSTSEQNCE</code></td>
+<td>Voucher legs</td><td><code>voucherEntry</code></td>
+<td><span class="chip c-warn">derived</span></td><td>Dr = Cr per voucher</td></tr>
+<tr><td>Purchase order</td><td><code>POPORH1/L</code></td><td><code>PORHSEQ</code></td>
+<td>Purchase Order</td><td><code>purchaseOrder</code> — <strong>0 rows</strong></td>
+<td><span class="chip c-crit">not implemented</span></td><td>—</td></tr>
+<tr><td>Goods receipt</td><td><code>PORCPH1/L</code></td><td><code>RCPHSEQ</code></td>
+<td>Delivery / GRN</td><td><code>delivery</code> — <strong>0 rows</strong></td>
+<td><span class="chip c-crit">not implemented</span></td><td>—</td></tr>
+<tr><td>Inventory movement</td><td><code>ICHIST</code></td><td>—</td><td>—</td>
+<td>no target rows</td><td><span class="chip c-crit">no equivalent</span></td><td>—</td></tr>
+<tr><td>Sales invoice</td><td><code>OEINVH/D</code> → <code>AROBL</code></td><td><code>INVUNIQ</code></td>
+<td>Invoice</td><td><code>invoice</code> — <strong>0 rows</strong></td>
+<td><span class="chip c-crit">not implemented</span></td><td>—</td></tr>
+<tr><td>Customer master</td><td><code>ARCUS</code></td><td><code>IDCUST</code></td>
+<td>Contact (customer)</td><td><code>contact</code> — <strong>0 rows</strong></td>
+<td><span class="chip c-crit">not implemented</span></td><td>—</td></tr>
+<tr><td>Payment / settlement</td><td><code>APOBP</code>, <code>APOBL</code> type 51</td><td>—</td>
+<td>Payment request</td><td><code>paymentRequest</code> — <strong>0 rows</strong></td>
+<td><span class="chip c-crit">not implemented</span></td><td>—</td></tr>
+<tr><td>Credit / debit note</td><td><code>APOBL</code> type 32 / 22</td><td>—</td><td>—</td>
+<td>no target rows</td><td><span class="chip c-crit">not implemented</span></td><td>—</td></tr>
+<tr><td>Order costing / bill of quantity</td><td><code>OLOLBOQD</code>, <code>OLCSTIN*</code></td>
+<td>—</td><td>—</td><td>—</td><td><span class="chip c-crit">no equivalent</span></td>
+<td>requires new implementation if in scope</td></tr>
+<tr><td>Export packing &amp; shipping</td><td><code>IEPKLST*</code>, <code>IEEXPINV</code></td>
+<td>—</td><td>—</td><td>—</td><td><span class="chip c-crit">no equivalent</span></td>
+<td>requires new implementation if in scope</td></tr>
+<tr><td>Work in progress</td><td><code>ICITEM</code> <code>5WPSEW</code>/<code>5WPCUT</code></td>
+<td>—</td><td>—</td><td>—</td><td><span class="chip c-crit">no equivalent</span></td>
+<td>modelling gap, not a mapping gap</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="idmap">
+<div class="sec-head"><span class="sec-no">15</span><div>
+  <h2>Source ID → target ID mapping</h2></div></div>
+
+<p class="measure">SMEAssist generates every identifier and exposes none on a create DTO. There
+is no external-reference column on any entity. Every Sage→target relationship therefore has
+to be re-established through a lookup structure that the migration owns — which makes that
+structure a <strong>system of record, not a cache</strong>.</p>
+
+<div class="find crit">
+  <h4>The system of record is one gitignored file on one laptop
+  <span class="chip c-crit">critical</span> <span class="chip c-ok">confirmed</span></h4>
+  <div class="ev">idedat_staging.crosswalk    0 rows      &lt;- the table built for this
+idedat_staging.sku_ledger   0 rows
+
+work/crosswalk_live.json    4.1 MB, gitignored, hard-coded path, no DB fallback
+    items     17,220        contacts    455
+    products     197        burned       75      series 0</div>
+  <p>Lose that file and the migration cannot resume, cannot adopt records already created, and
+  cannot say what came from where. It has already been hand-repaired four times. Of everything
+  in this review, this is the item most likely to cause irreversible loss, and the cheapest to
+  fix — the destination table already exists and is empty.</p>
+</div>
+
+<div class="tw"><table class="t-tight">
+<thead><tr><th>Relationship</th><th>Where the link lives</th><th>Durable?</th></tr></thead>
+<tbody>
+<tr><td>Sage vendor code → contact id</td><td>crosswalk file · <code>contacts</code></td>
+<td><span class="chip c-warn">file only</span></td></tr>
+<tr><td>Sage item → product id</td><td>crosswalk file · <code>items</code>; SKU string in
+<code>product.skuCode</code></td><td><span class="chip c-warn">partly — SKU is in the DB</span></td></tr>
+<tr><td>Sage GL account → finance account</td><td>ledger display name suffix
+<code>_SAGE-&lt;acct&gt;</code></td><td><span class="chip c-crit">renameable</span></td></tr>
+<tr><td>Sage document → bill id</td><td><strong><code>bill.metadata</code> JSON</strong> —
+<code>sageVendor</code>, <code>sageDoc</code>, <code>sageBatch</code>, <code>sageItem</code></td>
+<td><span class="chip c-ok">in the database, on all 10,769</span></td></tr>
+<tr><td>Sage batch key → bill</td><td><code>metadata.sageBatch</code> + <code>sageItem</code> =
+<code>(CNTBTCH, CNTITEM)</code></td><td><span class="chip c-ok">in the database</span></td></tr>
+<tr><td>Sage journal → voucher</td><td>—</td><td><span class="chip c-crit">none</span></td></tr>
+</tbody></table></div>
+
+<p class="measure">The bright spot: because <code>bill.metadata</code> is populated on every
+bill and carries both the natural key and the batch key, an independent bill-level
+reconciliation is possible from the database alone with no reference to the crosswalk. That
+is exactly how the check in <a href="#matrix">§ 02</a> was built, and it is the pattern the
+other entities should copy.</p>
+</section>
+
+<section id="scripts">
+<div class="sec-head"><span class="sec-no">16</span><div>
+  <h2>Existing migration scripts — what they do before what is wrong with them</h2></div></div>
+
+<p class="measure"><code>post_sage_bills.py</code> is 3,943 lines and exposes nine phases:
+<code>cleanup · masters · dryrun · post · verify · legs · goods-masters · goods-dryrun ·
+goods-post</code>. It runs <strong>two entirely separate populations</strong> — AP-direct and
+goods/PO — with separate readers, separate classifiers and separate phases, sharing one
+payload builder, one crosswalk and one <code>posted.log</code>. <code>run_all.sh</code>
+sequences four of those phases strictly one at a time, having measured that two concurrent
+phases throttle each other to 12 bills/min against 63 alone.</p>
+
+<p class="measure">Read fairly, the design is thoughtful. It is resumable by construction
+(<code>posted.log</code> is append-only and skipped entries are genuinely skipped), it
+relocates the Sage host when DHCP moves it rather than running blind, and it refuses to start
+when a second run is live because concurrent phases corrupt the crosswalk. The preflight in
+<code>run_all.sh</code> is unusually well reasoned — it explains, in comments, the exact
+failure it exists to prevent and what running anyway would cost.</p>
+
+<h3>What is wrong with them</h3>
+
+<div class="tw"><table class="t-tight">
+<thead><tr><th style="width:30%">Script</th><th>Problem</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td><code>work/cleanup_pilot.py</code></td>
+<td>Deletes every live bill in the org; <strong>docstring claims it cannot</strong></td>
+<td><span class="chip c-crit">confirmed, worse than reported</span></td></tr>
+<tr><td><code>post_sage_bills.py</code> goods path</td>
+<td>Reads <code>doc_total</code> (source currency) and posts it as INR at 1.0</td>
+<td><span class="chip c-crit">confirmed per-document</span></td></tr>
+<tr><td><code>extract.sql</code></td>
+<td>Headers from posted <code>APOBL</code>, lines from batch <code>APIBD</code> — returns zero
+lines silently if posted batches are ever purged</td>
+<td><span class="chip c-warn">latent</span></td></tr>
+<tr><td>staging build (upstream of this repo)</td>
+<td>Strips trailing punctuation from invoice numbers, then joins AP on the damaged key</td>
+<td><span class="chip c-crit">new — N1</span></td></tr>
+<tr><td><code>work/po_validate.py</code>, <code>work/po_holds.py</code></td>
+<td>Dead — call <code>build_po_payload</code>, <code>classify_po</code>,
+<code>load_po_book</code>, <code>po_pilot_pick</code>, none of which still exist</td>
+<td><span class="chip c-ok">confirmed dead</span></td></tr>
+<tr><td><code>work/find_sage.py</code></td>
+<td>Rewrites <code>.env</code> non-atomically — a crash mid-write loses the SQL password and
+the auth token</td><td><span class="chip c-warn">confirmed by design</span></td></tr>
+<tr><td><code>work/failure_report.py</code></td>
+<td>Silently omits documents that shape cleanly, have a contact and were never posted — the
+file <code>run_all.sh</code> presents as the record of outstanding work is incomplete</td>
+<td><span class="chip c-warn">inherited</span></td></tr>
+<tr><td>the three reconcilers</td>
+<td>Disagree on denominators, on whether a <code>||preexisting</code> line counts as posted,
+and on tolerance</td><td><span class="chip c-warn">inherited</span></td></tr>
+</tbody></table></div>
+
+<div class="find warn">
+  <h4>A structural observation about the safety model</h4>
+  <p>The dangerous scripts are all in <code>work/</code> — one-off repair tools that write to
+  the live system, sitting beside read-only probes with no naming convention, no
+  <code>--apply</code> convention and no separation. <code>run_all.sh</code> is carefully
+  guarded; the things next to it are not guarded at all. The risk is not that any individual
+  script is reckless, it is that <strong>a reader cannot tell which is which</strong>, and one
+  of them lies in its docstring.</p>
+</div>
+</section>
+
+<section id="recon">
+<div class="sec-head"><span class="sec-no">17</span><div>
+  <h2>Reconciliation — the two blind spots that matter</h2></div></div>
+
+<div class="find crit">
+  <h4>A reconciliation whose two sides read the same column cannot detect that column being
+  wrong</h4>
+  <p>This is precisely how a ₹48 crore currency error stays invisible: the reconciler compares
+  <code>doc_total</code> in the mirror against <code>doc_total</code>-derived values in the
+  target and finds agreement, because both sides inherit the same mistake. Any check must draw
+  its expected value from a source the loader did not use — live <code>APOBL.AMTINVCHC</code>,
+  not the staging column.</p>
+</div>
+
+<div class="find crit">
+  <h4>Presence is not correctness</h4>
+  <p><code>items_without_ledger: 0</code> and <code>bill_lines_null_ledger: 0</code> were green
+  throughout the period the prior audit says ₹8.72 crore was being misfiled. Both checks ask
+  "is a ledger attached?" and neither asks "is it the right one?" Given the backend silently
+  overwrites amounts, a green presence check is close to meaningless on its own.</p>
+</div>
+
+<h3>The governing principle the current suite lacks</h3>
+<p class="measure">Every Sage document must land in exactly one of four buckets, and the four
+must sum to the Sage total:</p>
+<div class="ev">posted-and-correct  +  posted-and-wrong  +  not-posted-but-loadable  +  deliberately-excluded
+                                                        = every in-window Sage document</div>
+<p class="measure">Today the tooling conflates the last two and hides the fourth entirely,
+which is why the project's own two reports disagree (18,006 vs 11,179 outstanding) with
+nothing to explain the gap. Until the four buckets balance, "how much is left" has no
+defensible answer.</p>
+
+<h3>What a working check looks like</h3>
+<p class="measure">The check in <a href="#matrix">§ 02</a> is offered as the pattern: it joins
+<code>bill.metadata</code> to live Sage, consolidates <code>*N</code> parts, reports
+no-match separately from mismatch, and splits reverse-charge out rather than letting it
+pollute the tolerance. It found zero unmatched documents, reproduced the known defect
+exactly, and surfaced one document the prior audit had not named — which is what a
+reconciliation is supposed to do.</p>
+</section>
+
+<section id="plan">
+<div class="sec-head"><span class="sec-no">18</span><div>
+  <h2>Implementation plan</h2></div></div>
+
+<p class="measure">Sequenced by dependency and by cost of delay, not by size. Items 1–2 are
+hazards; 3–5 are prerequisites for trusting anything the pipeline reports; 6 is the decision
+that actually determines how big this programme is.</p>
+
+<div class="tw"><table>
+<thead><tr><th style="width:4%">#</th><th style="width:28%">Action</th><th>Why now</th><th style="width:13%">Effort</th></tr></thead>
+<tbody>
+<tr><td class="n">1</td><td><strong>Disarm <code>work/cleanup_pilot.py</code></strong> — require
+<code>--apply</code>, scope it to an explicit id list, and fix the false docstring</td>
+<td>One careless invocation destroys 9,377 bills. Nothing else in this list can undo that</td>
+<td><span class="chip c-ok">minutes</span></td></tr>
+<tr><td class="n">2</td><td><strong>Block <code>goods-post</code></strong> until item 3 lands</td>
+<td>1,468 foreign-currency documents are contact-ready and blocked on nothing; the next run
+understates ₹38.18 crore</td><td><span class="chip c-ok">minutes</span></td></tr>
+<tr><td class="n">3</td><td><strong>Fix the currency handling</strong> — carry
+<code>currency</code> and <code>fx_rate</code> into <code>bill.currency</code> /
+<code>conversionRate</code> with <code>purchaseType=INTERNATIONAL</code>
+<em class="q">(not</em> a swap to <code>ap_amount_hc</code>)</td>
+<td>The target already models this and the backend already honours it. Swapping columns
+instead would import the N1 corruption and discard the currency fact</td>
+<td><span class="chip c-warn">small</span></td></tr>
+<tr><td class="n">4</td><td><strong>Re-extract the staging mirror on the unstripped invoice
+number</strong>, then reconcile the mirror against live <code>APOBL</code> per document</td>
+<td>Until this is done, no amount sourced from <code>ap_amount_hc</code> can be trusted, and
+the size of the damage is only bounded, not known</td><td><span class="chip c-warn">small</span></td></tr>
+<tr><td class="n">5</td><td><strong>Persist the crosswalk</strong> into
+<code>idedat_staging.crosswalk</code>, which exists and holds 0 rows; keep the file as a cache</td>
+<td>Single point of irreversible loss; the destination already exists</td>
+<td><span class="chip c-warn">small</span></td></tr>
+<tr><td class="n">6</td><td><strong>Give the reconciler an independent source</strong> — expected
+values from live Sage, never from the staging column the loader read</td>
+<td>Closes the blind spot that let a ₹48 crore error read green</td>
+<td><span class="chip c-warn">medium</span></td></tr>
+<tr><td class="n">7</td><td><strong>Reproduce or retire the ₹8.72 Cr mis-headed-ledger
+finding</strong></td><td>It is ranked HIGH and drives a proposed correcting journal, and I could
+not reproduce it. Acting on an unreproduced finding moves real money the wrong way</td>
+<td><span class="chip c-warn">small</span></td></tr>
+<tr><td class="n">8</td><td><strong>Put scope to the business</strong>: sales, payments, opening
+balances, credit/debit notes, prepayments, inventory — in or out?</td>
+<td>This determines whether the programme is 60% remaining or 5× its current size. It has
+never been asked</td><td><span class="chip c-crit">decision</span></td></tr>
+<tr><td class="n">9</td><td><strong>Source the CIN/LLPIN file</strong></td>
+<td>Highest-leverage non-engineering item; genuinely absent from Sage, so no amount of code
+will find it</td><td><span class="chip c-crit">external</span></td></tr>
+<tr><td class="n">10</td><td><strong>Then</strong> resume <code>goods-post</code> at scale, with
+per-line GST reconciliation in place</td><td>14,628 goods documents have never had a per-line
+tax check; this is the stream about to run at volume</td><td><span class="chip c-warn">medium</span></td></tr>
+</tbody></table></div>
+
+<h3>What not to do</h3>
+<ul class="tick">
+<li><strong>Do not switch the goods path to <code>ap_amount_hc</code> as previously
+recommended</strong> without fixing the extract key first.</li>
+<li><strong>Do not re-apply <code>sage-migration-backend-changes.patch</code></strong> — it is
+missing 12 of the 32 reverted files and reintroduces a silent RCM default.</li>
+<li><strong>Do not raise a tolerance to make a check pass.</strong> The −₹1.38 net drift across
+2,693 documents is genuine rounding and is not accumulating; the 901 RCM differences are
+structural and should be reported separately, not tolerated away.</li>
+<li><strong>Do not re-post 5,317 vouchers</strong> to correct a ledger classification — if the
+mis-heading is confirmed, correct it with a journal.</li>
+<li><strong>Do not treat the blended 34.2% as progress.</strong> Report the two streams
+separately; they are in completely different states.</li>
+</ul>
+</section>
+
+<section id="unknowns">
+<div class="sec-head"><span class="sec-no">19</span><div>
+  <h2>Remaining unknowns</h2></div></div>
+
+<p class="measure">Stated plainly, because a migration plan that hides its unknowns is worse
+than one that has them.</p>
+
+<div class="tw"><table class="t-tight">
+<thead><tr><th style="width:36%">Unknown</th><th>What would settle it</th></tr></thead>
+<tbody>
+<tr><td><strong>Whether the ₹8.72 Cr mis-heading is real</strong>, and if so which head is
+correct</td><td>The prior audit's original query; then a finance judgement on which of Direct
+or Indirect is right — the data cannot decide this</td></tr>
+<tr><td><strong>Whether the four scope exclusions are deliberate</strong> — ₹104.43 Cr,
+including ₹28.78 Cr in "Difference Adjustment Control A/C"</td>
+<td>Someone who knows what that account is for. This is a business question wearing a data
+costume</td></tr>
+<tr><td><strong>The correct treatment of 43 foreign-currency AP-direct invoices</strong>
+(₹25.42 Cr) excluded by the INR filter</td><td>A scope decision. With item 3 implemented,
+including them becomes technically straightforward</td></tr>
+<tr><td><strong>Whether migrated payables can ever tie to Sage's</strong></td>
+<td>They cannot until opening balances and payments load: ₹497.2M migrated against a Sage
+opening of ₹535.1M and closing of ₹429.5M — the migrated figure is neither, and should not be
+expected to be</td></tr>
+<tr><td><strong>Whether the <code>1L9O</code> related-party accounts (₹3.26 bn) are
+payables</strong></td><td>A question about how the business thinks, not about the data.
+Including or excluding them moves the opening-balance gap by an order of magnitude</td></tr>
+<tr><td><strong>Whether the 1,079 no-distribution documents are loan repayments</strong>
+(₹295,107,559.76)</td><td>The count and value reproduce exactly; the <em class="q">interpretation</em>
+does not. Trace two through <code>APOBP</code> and <code>GLPOST</code></td></tr>
+<tr><td><strong>How <code>OL</code> order IDs join to <code>OE</code> documents</strong>, and the
+full sales posting chain</td><td>Only needed if sales comes into scope — but must be done
+before, not during</td></tr>
+<tr><td><strong>Whether the 289 blocked vendors are genuinely held</strong> or merely not yet
+attempted</td><td>Re-run the masters phase against current code and count what actually fails</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="final">
+<div class="sec-head"><span class="sec-no">20</span><div>
+  <h2>Final recommendation</h2></div></div>
+
+<p class="lede measure">Treat this as a working pilot that has proven its method on one
+document type, not as a migration that is two-thirds finished.</p>
+
+<p class="measure">The evidence supports an unusually clear split. <strong>The hard part is
+done and it is right.</strong> Indian GST, reverse charge, rate snapping, receipt-split
+consolidation, ledger construction, double-entry balance — all of it reproduces against live
+Sage, and where it differs it differs by rounding or by a documented structural divergence.
+Three non-RCM documents out of 9,376 differ by a rupee or more, and two of those are one known
+bug with a known cause. That is a good result and the people who built it should be told so.</p>
+
+<p class="measure"><strong>The easy parts are what is missing.</strong> Not because they are
+technically hard, but because they were never scoped: sales, purchase orders, receipts,
+payments, notes, opening balances, inventory. The programme has been reporting a percentage
+against a denominator that only counts purchase invoices, which makes 34.2% sound like
+progress toward an end state rather than progress through one of eight objects.</p>
+
+<div class="call q">
+<h3>The single most important thing to change</h3>
+<p>Stop reporting one completeness number. <strong>AP-direct expense bills are 72.4% across;
+the goods stream is 0.88%; everything else is 0%.</strong> Those three facts lead to three
+completely different conversations, and averaging them into one produces a number that
+supports none of them. Every decision in the plan above follows from telling them apart.</p>
+</div>
+
+<p class="measure">And before anything else runs: disarm the delete script, and do not let
+<code>goods-post</code> reach the API until the currency handling is fixed — with the real
+currency carried, not with the column the prior audit recommended, which is itself corrupted
+on at least 174 documents.</p>
+
+<hr class="div" style="margin:40px 0 22px">
+<p style="font-size:12.5px;color:var(--muted)" class="measure">
+<strong>Method and posture.</strong> Every statement issued against both databases was a
+<code>SELECT</code>, <code>SHOW</code> or <code>DESCRIBE</code>; no migration phase was run,
+not even <code>dryrun</code>, which reaches the live API. No backend code, script,
+configuration or data was modified. The one write performed was <code>work/find_sage.py
+--write</code> updating <code>SQL_HOST</code> in <code>.env</code>, because the Sage laptop had
+moved to a new DHCP address and was otherwise unreachable. Figures are as at 8 September 2026
+against Sage <code>IDEDAT</code> and SMEAssist org <code>wonderblues</code>. Where a prior claim
+could not be reproduced it is marked <span class="chip c-grey">not reproduced</span> rather than
+refuted; failing to reproduce a finding is not the same as disproving it.</p>
+</section>
+
+</main>
+</div>

@@ -71,3 +71,7 @@ windows-claude-prompt-*.txt
 *.b4-*
 *~
 .DS_Store
+
+# run logs and exclusion manifests: vendor codes, amounts, bank details
+out/
+work/*.out
